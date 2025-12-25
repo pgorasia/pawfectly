@@ -1,0 +1,101 @@
+/**
+ * Photo Upload Service
+ * Handles photo upload with async AI moderation via Supabase Edge Function
+ * 
+ * Flow:
+ * 1. User picks image
+ * 2. Image is resized/compressed
+ * 3. Image is uploaded to Supabase Storage
+ * 4. Photo record is created with status 'pending'
+ * 5. Async AI moderation is triggered via Edge Function
+ * 6. Photo status is updated when moderation completes
+ */
+
+import { pickImage } from './imagePicker';
+import { resizeAndUploadPhoto } from './resizeAndUploadPhoto';
+import { supabase } from '../supabase/supabaseClient';
+import { getCurrentUserId } from '../supabase/photoService';
+import type { Photo, BucketType } from '@/types/photo';
+
+export interface UploadPhotoWithValidationParams {
+  bucketType: BucketType;
+  dogId?: string;
+  // Note: Validation is now automatic via DB webhook - no manual trigger needed
+}
+
+export interface UploadPhotoResult {
+  success: boolean;
+  photo?: Photo;
+  error?: string;
+}
+
+/**
+ * Uploads a photo with async AI moderation
+ * 
+ * Steps:
+ * 1. Pick image from device
+ * 2. Resize and compress image
+ * 3. Upload to Supabase Storage
+ * 4. Create photo record with status 'pending'
+ * 5. (Optional) Trigger async server-side validation
+ */
+export async function uploadPhotoWithValidation(
+  params: UploadPhotoWithValidationParams
+): Promise<UploadPhotoResult> {
+  const { bucketType, dogId } = params;
+
+  try {
+    // Step 1: Pick image from device
+    const pickedImage = await pickImage({
+      allowsEditing: false,
+      quality: 0.8,
+    });
+
+    if (!pickedImage) {
+      // User cancelled
+      return { success: false };
+    }
+
+    // Step 2: Get current user ID
+    const userId = await getCurrentUserId();
+
+    // Step 3: Resize, upload to Storage, and create photo record
+    // resizeAndUploadPhoto already creates the DB record, so we don't need createPhotoRecord
+    const uploadResult = await resizeAndUploadPhoto({
+      localUri: pickedImage.uri,
+      userId,
+      bucketType,
+      dogId,
+      mimeType: pickedImage.type,
+    });
+
+    // Step 4: Fetch the newly created photo record
+    const { data: photo, error: fetchError } = await supabase
+      .from('photos')
+      .select('*')
+      .eq('id', uploadResult.photoRowId)
+      .single();
+
+    if (fetchError || !photo) {
+      throw new Error(`Failed to fetch newly created photo record: ${fetchError?.message}`);
+    }
+
+    // Step 5: Validation is now triggered automatically by DB webhook on INSERT
+    // No need to manually trigger - the webhook will call the edge function
+    console.log(`[PhotoUpload] ✅ Photo ${photo.id} uploaded. Validation will be triggered automatically by webhook.`);
+
+    return {
+      success: true,
+      photo,
+    };
+  } catch (error) {
+    console.error('[PhotoUpload] Upload failed:', error);
+    const errorMessage =
+      error instanceof Error ? error.message : 'Failed to upload photo';
+    return {
+      success: false,
+      error: errorMessage,
+    };
+  }
+}
+

@@ -1,0 +1,32 @@
+-- Storage Bucket Configuration Reference
+-- 
+-- NOTE: Storage buckets must be created via Supabase Dashboard or API, not SQL
+-- This file documents the required configuration for reference
+--
+-- For detailed setup instructions, see: docs/STORAGE_BUCKET_SETUP.md
+--
+-- BUCKET CONFIGURATION:
+-- - Name: photos
+-- - Public: true (for dev - will be private later)
+-- - File size limit: 10MB (10485760 bytes)
+-- - Allowed MIME types: image/jpeg, image/png, image/webp (optional)
+--
+-- STORAGE PATH STRUCTURE:
+-- {user_id}/{bucket_type}/{photo_id}.jpg
+-- Example: 550e8400-e29b-41d4-a716-446655440000/human/123e4567-e89b-12d3-a456-426614174000.jpg
+--
+-- STORAGE BUCKET RLS POLICIES (configure via Dashboard):
+-- See docs/STORAGE_BUCKET_SETUP.md for step-by-step instructions
+--
+-- 1. INSERT: "Users can upload their own photos"
+--    bucket_id = 'photos' AND auth.uid()::text = (storage.foldername(name))[1]
+--
+-- 2. SELECT: "Public read access" (for PUBLIC bucket)
+--    bucket_id = 'photos'
+--
+-- 3. UPDATE: "Users can update their own photos"
+--    bucket_id = 'photos' AND auth.uid()::text = (storage.foldername(name))[1]
+--
+-- 4. DELETE: "Users can delete their own photos"
+--    bucket_id = 'photos' AND auth.uid()::text = (storage.foldername(name))[1]
+
