@@ -25,24 +25,25 @@ export interface PhotoBucketState {
 }
 
 export interface UsePhotoBucketsReturn {
-  dogBuckets: Record<string, PhotoBucketState>;
+  dogBuckets: Record<number, PhotoBucketState>; // Key is slot number (1, 2, or 3)
   humanBucket: PhotoBucketState;
   uploadPhotoToBucket: (
     bucketType: BucketType,
-    dogId?: string
+    dogSlot?: number
   ) => Promise<void>;
-  removePhoto: (photoId: string, bucketType: BucketType, dogId?: string) => Promise<void>;
-  replacePhoto: (photoId: string, bucketType: BucketType, dogId?: string) => Promise<void>;
+  removePhoto: (photoId: string, bucketType: BucketType, dogSlot?: number) => Promise<void>;
+  replacePhoto: (photoId: string, bucketType: BucketType, dogSlot?: number) => Promise<void>;
   hasHumanDogPhoto: boolean;
   refreshPhotos: () => Promise<void>;
 }
 
 /**
  * Hook to manage photo buckets for all dogs and human
+ * dogSlots: array of slot numbers (1, 2, or 3) for each dog
  */
-export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
+export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
   const { user } = useAuth();
-  const [dogBuckets, setDogBuckets] = useState<Record<string, PhotoBucketState>>({});
+  const [dogBuckets, setDogBuckets] = useState<Record<number, PhotoBucketState>>({});
   const [humanBucket, setHumanBucket] = useState<PhotoBucketState>({
     photos: [],
     isUploading: false,
@@ -52,16 +53,16 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
 
   // Initialize dog buckets
   useEffect(() => {
-    const initialBuckets: Record<string, PhotoBucketState> = {};
-    dogIds.forEach((dogId) => {
-      initialBuckets[dogId] = {
+    const initialBuckets: Record<number, PhotoBucketState> = {};
+    dogSlots.forEach((slot) => {
+      initialBuckets[slot] = {
         photos: [],
         isUploading: false,
         uploadError: null,
       };
     });
     setDogBuckets(initialBuckets);
-  }, [dogIds]);
+  }, [dogSlots]);
 
   // Load photos from Supabase
   const refreshPhotos = useCallback(async () => {
@@ -69,12 +70,11 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
       if (!user?.id) return;
       const userId = user.id;
 
-      // Load dog photos
-      // dogIds are now simple strings: 'dog1', 'dog2', 'dog3', etc.
-      const dogBucketsData: Record<string, PhotoBucketState> = {};
-      for (const dogId of dogIds) {
-        const photos = await getDogPhotos(userId, dogId);
-        dogBucketsData[dogId] = {
+      // Load dog photos by slot
+      const dogBucketsData: Record<number, PhotoBucketState> = {};
+      for (const slot of dogSlots) {
+        const photos = await getDogPhotos(userId, slot);
+        dogBucketsData[slot] = {
           photos,
           isUploading: false,
           uploadError: null,
@@ -99,7 +99,7 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
     } catch (error) {
       console.error('Failed to refresh photos:', error);
     }
-  }, [dogIds]);
+  }, [dogSlots]);
 
   // Load photos on mount and when user changes
   useEffect(() => {
@@ -153,13 +153,13 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
   }, [user?.id, refreshPhotos]);
 
   const uploadPhotoToBucket = useCallback(
-    async (bucketType: BucketType, dogId?: string) => {
+    async (bucketType: BucketType, dogSlot?: number) => {
       // Set uploading state
-      if (bucketType === 'dog' && dogId) {
+      if (bucketType === 'dog' && dogSlot) {
         setDogBuckets((prev) => ({
           ...prev,
-          [dogId]: {
-            ...prev[dogId],
+          [dogSlot]: {
+            ...prev[dogSlot],
             isUploading: true,
             uploadError: null,
           },
@@ -176,16 +176,16 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
         // Use the dedicated photo upload service
         const result = await uploadPhotoWithValidation({
           bucketType,
-          dogId,
+          dogSlot,
         });
 
         if (!result.success || !result.photo) {
           // User cancelled or upload failed - reset state
-          if (bucketType === 'dog' && dogId) {
+          if (bucketType === 'dog' && dogSlot) {
             setDogBuckets((prev) => ({
               ...prev,
-              [dogId]: {
-                ...prev[dogId],
+              [dogSlot]: {
+                ...prev[dogSlot],
                 isUploading: false,
                 uploadError: result.error || null,
               },
@@ -201,11 +201,11 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
         }
 
         // Upload successful - update state with new photo
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              photos: [...prev[dogId].photos, result.photo!],
+            [dogSlot]: {
+              photos: [...prev[dogSlot].photos, result.photo!],
               isUploading: false,
               uploadError: null,
             },
@@ -264,23 +264,23 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
         }
       }
     },
-    [dogIds, user]
+    [dogSlots, user]
   );
 
   const removePhoto = useCallback(
-    async (photoId: string, bucketType: BucketType, dogId?: string) => {
+    async (photoId: string, bucketType: BucketType, dogSlot?: number) => {
       try {
         if (!user?.id) return;
 
         await deletePhoto(photoId, user.id);
 
         // Update state
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              ...prev[dogId],
-              photos: prev[dogId].photos.filter((p) => p.id !== photoId),
+            [dogSlot]: {
+              ...prev[dogSlot],
+              photos: prev[dogSlot].photos.filter((p) => p.id !== photoId),
             },
           }));
         } else {
@@ -300,7 +300,7 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
   );
 
   const replacePhoto = useCallback(
-    async (photoId: string, bucketType: BucketType, dogId?: string) => {
+    async (photoId: string, bucketType: BucketType, dogSlot?: number) => {
       try {
         if (!user?.id) return;
 
@@ -316,11 +316,11 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
         }
 
         // Step 2: Set uploading state
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              ...prev[dogId],
+            [dogSlot]: {
+              ...prev[dogSlot],
               isUploading: true,
               uploadError: null,
             },
@@ -337,12 +337,12 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
         await deletePhoto(photoId, user.id);
 
         // Step 4: Update state to remove old photo
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              ...prev[dogId],
-              photos: prev[dogId].photos.filter((p) => p.id !== photoId),
+            [dogSlot]: {
+              ...prev[dogSlot],
+              photos: prev[dogSlot].photos.filter((p) => p.id !== photoId),
             },
           }));
         } else {
@@ -358,7 +358,7 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
           localUri: pickedImage.uri,
           userId,
           bucketType,
-          dogId,
+          dogSlot,
           mimeType: pickedImage.type,
         });
 
@@ -374,11 +374,11 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
         }
 
         // Step 7: Update state with new photo
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              photos: [...prev[dogId].photos, photo],
+            [dogSlot]: {
+              photos: [...prev[dogSlot].photos, photo],
               isUploading: false,
               uploadError: null,
             },
@@ -404,11 +404,11 @@ export function usePhotoBuckets(dogIds: string[]): UsePhotoBucketsReturn {
           error instanceof Error ? error.message : 'Failed to replace photo';
 
         // Reset uploading state on error
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              ...prev[dogId],
+            [dogSlot]: {
+              ...prev[dogSlot],
               isUploading: false,
               uploadError: errorMessage,
             },

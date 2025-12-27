@@ -10,7 +10,8 @@ export type PhotoStatus = 'pending' | 'approved' | 'rejected';
 export interface Photo {
   id: string;
   user_id: string;
-  dog_id: string | null;
+  dog_id: string | null; // Deprecated: kept for backwards compatibility, use dog_slot instead
+  dog_slot: number | null; // Slot number (1-3) for dog photos, null for human photos
   bucket_type: BucketType;
   target_type: TargetType; // What to look for: 'dog' for dog bucket, 'human' for human bucket
   storage_path: string;

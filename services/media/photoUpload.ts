@@ -19,6 +19,8 @@ import type { Photo, BucketType } from '@/types/photo';
 
 export interface UploadPhotoWithValidationParams {
   bucketType: BucketType;
+  dogSlot?: number; // Slot number (1-3) for dog photos
+  // Deprecated: dogId kept for backwards compatibility, use dogSlot instead
   dogId?: string;
   // Note: Validation is now automatic via DB webhook - no manual trigger needed
 }
@@ -42,7 +44,7 @@ export interface UploadPhotoResult {
 export async function uploadPhotoWithValidation(
   params: UploadPhotoWithValidationParams
 ): Promise<UploadPhotoResult> {
-  const { bucketType, dogId } = params;
+  const { bucketType, dogSlot, dogId } = params;
 
   try {
     // Step 1: Pick image from device
@@ -65,7 +67,7 @@ export async function uploadPhotoWithValidation(
       localUri: pickedImage.uri,
       userId,
       bucketType,
-      dogId,
+      dogSlot,
       mimeType: pickedImage.type,
     });
 

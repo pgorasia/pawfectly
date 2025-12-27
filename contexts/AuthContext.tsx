@@ -6,6 +6,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { getSession, getCurrentUser, signInWithEmail, signUpWithEmail, signOut, onAuthStateChange } from '@/services/supabase/authService';
 import type { User, Session } from '@supabase/supabase-js';
+import { initializeOnboardingState } from '@/services/supabase/onboardingService';
 
 interface AuthContextType {
   user: User | null;
@@ -80,6 +81,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const { data, error } = await signUpWithEmail(email, password);
       if (error) {
         return { error };
+      }
+      // Initialize onboarding state for new user
+      if (data?.user?.id) {
+        try {
+          await initializeOnboardingState(data.user.id);
+        } catch (initError) {
+          console.error('[AuthContext] Failed to initialize onboarding state:', initError);
+          // Don't fail sign-up if onboarding init fails
+        }
       }
       // Session is updated via onAuthStateChange
       return { error: null };

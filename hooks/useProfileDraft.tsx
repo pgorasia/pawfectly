@@ -1,4 +1,9 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
+import {
+  dbDogToDogProfile,
+  dbProfileToHumanProfile,
+  dbPreferencesToDraftPreferences,
+} from '@/services/supabase/onboardingService';
 
 export type AgeGroup = 'puppy' | 'young' | 'adult' | 'senior';
 export type DogSize = 'small' | 'medium' | 'large';
@@ -10,6 +15,7 @@ export type ConnectionStyle = 'pawsome-pals' | 'pawfect-match';
 
 export interface DogProfile {
   id: string;
+  slot: number; // 1, 2, or 3 - stable slot identifier
   name: string;
   ageGroup: AgeGroup | null;
   breed: string;
@@ -61,6 +67,11 @@ interface ProfileDraftContextType {
   updateLocation: (location: Location) => void;
   updateConnectionStyles: (styles: ConnectionStyle[]) => void;
   updatePreferences: (style: ConnectionStyle, preferences: Preferences) => void;
+  loadFromDatabase: (data: {
+    profile: any;
+    dogs: any[];
+    preferences: any;
+  }) => void;
   reset: () => void;
 }
 
@@ -89,7 +100,19 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
   };
 
   const addDog = (dog: DogProfile) => {
-    setDraft((prev) => ({ ...prev, dogs: [...prev.dogs, dog] }));
+    setDraft((prev) => {
+      // Assign lowest available slot (1-3) not used by existing dogs
+      const usedSlots = prev.dogs.map(d => d.slot).filter(s => s >= 1 && s <= 3);
+      let newSlot = 1;
+      for (let i = 1; i <= 3; i++) {
+        if (!usedSlots.includes(i)) {
+          newSlot = i;
+          break;
+        }
+      }
+      const dogWithSlot = { ...dog, slot: newSlot };
+      return { ...prev, dogs: [...prev.dogs, dogWithSlot] };
+    });
   };
 
   const updateDog = (id: string, updates: Partial<DogProfile>) => {
@@ -124,6 +147,41 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
     }));
   };
 
+  const loadFromDatabase = (data: {
+    profile: any;
+    dogs: any[];
+    preferences: any;
+  }) => {
+    const newDraft: ProfileDraft = { ...defaultDraft };
+
+    // Load profile data
+    if (data.profile) {
+      newDraft.human = dbProfileToHumanProfile(data.profile);
+      if (data.profile.city || data.profile.lat || data.profile.lng) {
+        newDraft.location = {
+          city: data.profile.city || '',
+          latitude: data.profile.lat || undefined,
+          longitude: data.profile.lng || undefined,
+          useCurrentLocation: !!(data.profile.lat && data.profile.lng),
+        };
+      }
+    }
+
+    // Load dogs
+    if (data.dogs && data.dogs.length > 0) {
+      newDraft.dogs = data.dogs.map(dbDogToDogProfile);
+    }
+
+    // Load preferences
+    if (data.preferences) {
+      const { connectionStyles, preferences: prefs } = dbPreferencesToDraftPreferences(data.preferences);
+      newDraft.connectionStyles = connectionStyles;
+      newDraft.preferences = prefs;
+    }
+
+    setDraft(newDraft);
+  };
+
   const reset = () => {
     setDraft(defaultDraft);
   };
@@ -139,6 +197,7 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
         updateLocation,
         updateConnectionStyles,
         updatePreferences,
+        loadFromDatabase,
         reset,
       }}
     >

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
 import { AppText } from '@/components/ui/AppText';
@@ -9,6 +10,8 @@ import { Card } from '@/components/ui/Card';
 import { useProfileDraft, ConnectionStyle, Gender, Preferences } from '@/hooks/useProfileDraft';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+import { useAuth } from '@/contexts/AuthContext';
+import { savePreferencesData, setCurrentStep, updateOnboardingState } from '@/services/supabase/onboardingService';
 
 const CONNECTION_STYLES: {
   emoji: string;
@@ -219,10 +222,26 @@ function PreferencesSection({
 
 export default function ConnectionStyleScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const { draft, updateConnectionStyles, updatePreferences } = useProfileDraft();
   const [selectedStyles, setSelectedStyles] = useState<ConnectionStyle[]>(
     draft.connectionStyles || []
   );
+
+  // Set current step and mark photos as completed when page loads
+  useEffect(() => {
+    if (user?.id) {
+      setCurrentStep(user.id, 'preferences').catch((error) => {
+        console.error('[ConnectionStyleScreen] Failed to set current step:', error);
+      });
+      // Mark photos as completed since user has moved on to preferences
+      updateOnboardingState(user.id, {
+        photos_completed: true,
+      }).catch((error) => {
+        console.error('[ConnectionStyleScreen] Failed to mark photos as completed:', error);
+      });
+    }
+  }, [user?.id]);
 
   const toggleStyle = (style: ConnectionStyle) => {
     const newStyles = selectedStyles.includes(style)
@@ -237,6 +256,14 @@ export default function ConnectionStyleScreen() {
   };
 
   const handleContinue = () => {
+    // Save to database asynchronously (non-blocking)
+    if (user?.id) {
+      savePreferencesData(user.id, selectedStyles, draft.preferences).catch((error) => {
+        console.error('[ConnectionStyleScreen] Failed to save preferences data:', error);
+        // Don't block navigation on error
+      });
+    }
+
     router.push('/(tabs)');
   };
 
@@ -245,15 +272,23 @@ export default function ConnectionStyleScreen() {
   return (
     <ScreenContainer>
       <ProgressBar
-        currentStep={3}
-        totalSteps={3}
-        stepTitles={['My Pack', 'Photos', 'Preferences']}
+        currentStep={4}
+        totalSteps={4}
+        stepTitles={['Your Pack', 'Little about you', 'Photos', 'Preferences']}
       />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
+          <View style={styles.headerTop}>
+            <TouchableOpacity
+              onPress={() => router.push('/(profile)/photos')}
+              style={styles.backButton}
+            >
+              <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+            </TouchableOpacity>
+          </View>
           <AppText variant="heading" style={styles.title}>
             How would you like to connect?
           </AppText>
@@ -351,6 +386,15 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: Spacing.xl,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  backButton: {
+    padding: Spacing.sm,
+    marginLeft: -Spacing.sm,
   },
   title: {
     marginBottom: Spacing.sm,

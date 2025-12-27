@@ -14,6 +14,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/services/supabase/supabaseClient';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+import { getOnboardingState, loadUserData } from '@/services/supabase/onboardingService';
+import { useProfileDraft } from '@/hooks/useProfileDraft';
 
 // Complete OAuth session in browser
 WebBrowser.maybeCompleteAuthSession();
@@ -24,6 +26,7 @@ export default function AuthScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const { signIn, signUp } = useAuth();
+  const { loadFromDatabase } = useProfileDraft();
   const [mode, setMode] = useState<AuthMode>((params.mode as AuthMode) || 'signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -73,10 +76,61 @@ export default function AuthScreen() {
         }
       }
 
-      // Success - navigate to onboarding Step 1 ("Your Pack")
+      // Success - load user data and check onboarding state, then route accordingly
       // Small delay to ensure auth state is updated
-      setTimeout(() => {
-        router.replace('/(profile)/dogs');
+      setTimeout(async () => {
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user?.id) {
+            // Load user data from database
+            const userData = await loadUserData(user.id);
+            
+            // Load data into draft context
+            if (userData.profile || userData.dogs.length > 0 || userData.preferences) {
+              loadFromDatabase({
+                profile: userData.profile,
+                dogs: userData.dogs,
+                preferences: userData.preferences,
+              });
+            }
+
+            // Check onboarding state
+            const onboardingState = userData.onboardingState;
+            
+            if (!onboardingState) {
+              // New user - go to pack page
+              router.replace('/(profile)/dogs');
+            } else if (onboardingState.last_step === 'done') {
+              // Completed onboarding - go to feed
+              router.replace('/(tabs)');
+            } else {
+              // Route to the page indicated by last_step (current page user is on)
+              switch (onboardingState.last_step) {
+                case 'pack':
+                  router.replace('/(profile)/dogs');
+                  break;
+                case 'human':
+                  router.replace('/(profile)/human');
+                  break;
+                case 'photos':
+                  router.replace('/(profile)/photos');
+                  break;
+                case 'preferences':
+                  router.replace('/(profile)/connection-style');
+                  break;
+                default:
+                  // Fallback to dogs page
+                  router.replace('/(profile)/dogs');
+              }
+            }
+          } else {
+            router.replace('/(profile)/dogs');
+          }
+        } catch (error) {
+          console.error('[AuthScreen] Error checking onboarding state:', error);
+          // Default to pack page on error
+          router.replace('/(profile)/dogs');
+        }
       }, 100);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');

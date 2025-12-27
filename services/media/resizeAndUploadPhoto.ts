@@ -18,10 +18,12 @@ import { supabase } from '../supabase/supabaseClient';
 export interface ResizeAndUploadPhotoParams {
   userId: string;
   bucketType: 'human' | 'dog';
-  dogId?: string;
+  dogSlot?: number; // Slot number (1-3) for dog photos
   localUri: string;
   fileName?: string;
   mimeType?: string;
+  // Deprecated: dogId kept for backwards compatibility, use dogSlot instead
+  dogId?: string;
 }
 
 export interface ResizeAndUploadPhotoResult {
@@ -106,18 +108,18 @@ async function imageUriToBlob(uri: string): Promise<Uint8Array> {
 
 /**
  * Generates deterministic storage path
- * Format: users/{userId}/{bucketType}/{dogId-or-human}/{timestamp}_{random}.jpg
+ * Format: users/{userId}/{bucketType}/{dogSlot-or-human}/{timestamp}_{random}.jpg
  * - Human: users/{userId}/human/NA/{timestamp}_{random}.jpg
- * - Dog: users/{userId}/dog/dog1/{timestamp}_{random}.jpg (or dog2, dog3, etc.)
+ * - Dog: users/{userId}/dog/{slot}/{timestamp}_{random}.jpg (slot is 1, 2, or 3)
  */
 function generateStoragePath(
   userId: string,
   bucketType: 'human' | 'dog',
-  dogId?: string
+  dogSlot?: number
 ): string {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 9); // 7 random chars
-  const folder = bucketType === 'human' ? 'NA' : (dogId || 'dog1');
+  const folder = bucketType === 'human' ? 'NA' : (dogSlot?.toString() || '1');
   return `users/${userId}/${bucketType}/${folder}/${timestamp}_${random}.jpg`;
 }
 
@@ -136,7 +138,7 @@ function generateStoragePath(
 export async function resizeAndUploadPhoto(
   params: ResizeAndUploadPhotoParams
 ): Promise<ResizeAndUploadPhotoResult> {
-  const { userId, bucketType, dogId, localUri, mimeType } = params;
+  const { userId, bucketType, dogSlot, localUri, mimeType, dogId } = params;
 
   try {
     // Step 1: Validate MIME type
@@ -188,8 +190,9 @@ export async function resizeAndUploadPhoto(
       throw new Error(`Failed to prepare image for upload: ${blobError instanceof Error ? blobError.message : String(blobError)}`);
     }
 
-    // Step 6: Generate storage path
-    const storagePath = generateStoragePath(userId, bucketType, dogId);
+    // Step 6: Generate storage path (use dogSlot if provided, fallback to dogId for backwards compatibility)
+    const effectiveDogSlot = dogSlot || (dogId ? parseInt(dogId.replace('dog', '')) : undefined);
+    const storagePath = generateStoragePath(userId, bucketType, effectiveDogSlot);
     console.log(`[resizeAndUploadPhoto] Uploading to path: ${storagePath}`);
 
     // Step 7: Verify we have a valid session before uploading
@@ -236,18 +239,17 @@ export async function resizeAndUploadPhoto(
     console.log(`[resizeAndUploadPhoto] ✅ Successfully uploaded to storage: ${uploadData.path}`);
 
     // Step 8: Insert row into photos table with status='pending'
-    // Note: We use simple string IDs:
-    // - Human photos: dog_id = 'NA'
-    // - Dog photos: dog_id = 'dog1', 'dog2', 'dog3', etc. (based on index)
+    // - Human photos: dog_slot = NULL
+    // - Dog photos: dog_slot = 1, 2, or 3 (based on slot)
     // target_type: what to look for (same as bucket_type: 'human' bucket looks for 'human', 'dog' bucket looks for 'dog')
-    const validDogId = bucketType === 'human' ? 'NA' : (dogId || null);
+    const validDogSlot = bucketType === 'human' ? null : (dogSlot || (dogId ? parseInt(dogId.replace('dog', '')) : null));
     const targetType = bucketType; // target_type matches bucket_type
 
     const { data: photo, error: insertError } = await supabase
       .from('photos')
       .insert({
         user_id: userId,
-        dog_id: validDogId,
+        dog_slot: validDogSlot,
         bucket_type: bucketType,
         target_type: targetType,
         storage_path: storagePath,

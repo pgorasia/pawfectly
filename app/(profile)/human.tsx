@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
 import { AppText } from '@/components/ui/AppText';
@@ -8,8 +9,9 @@ import { AppButton } from '@/components/ui/AppButton';
 import { useProfileDraft, Gender } from '@/hooks/useProfileDraft';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
-
+import { useAuth } from '@/contexts/AuthContext';
 import { searchLocation } from '@/services/geocoding/locationService';
+import { saveHumanData, setCurrentStep } from '@/services/supabase/onboardingService';
 
 const GENDERS: { label: string; value: Gender }[] = [
   { label: 'Male', value: 'male' },
@@ -77,14 +79,23 @@ const is18Plus = (dateStr: string): boolean => {
 
 export default function HumanScreen() {
   const router = useRouter();
+  const { user } = useAuth();
   const { draft, updateHuman, updateLocation } = useProfileDraft();
+
+  // Set current step when page loads
+  React.useEffect(() => {
+    if (user?.id) {
+      setCurrentStep(user.id, 'human').catch((error) => {
+        console.error('[HumanScreen] Failed to set current step:', error);
+      });
+    }
+  }, [user?.id]);
   const [name, setName] = useState(draft.human.name || '');
   const [dateOfBirth, setDateOfBirth] = useState(draft.human.dateOfBirth || '');
   const [gender, setGender] = useState<Gender | null>(draft.human.gender);
   const [dateError, setDateError] = useState('');
-  const [useCurrentLocation, setUseCurrentLocation] = useState(
-    draft.location?.useCurrentLocation || false
-  );
+  const [showGenderDropdown, setShowGenderDropdown] = useState(false);
+  const [locationFromGPS, setLocationFromGPS] = useState(draft.location?.useCurrentLocation || false);
   const [city, setCity] = useState(draft.location?.city || '');
   const [citySuggestions, setCitySuggestions] = useState<{ name: string; fullAddress: string }[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -110,14 +121,14 @@ export default function HumanScreen() {
   const handleUseCurrentLocation = () => {
     // Stub: set fake location - in production, this would use actual GPS
     const detectedCity = 'San Francisco, CA'; // This would come from reverse geocoding
-    setUseCurrentLocation(true);
     setCity(detectedCity); // Populate the city field
+    setLocationFromGPS(true); // Mark as GPS location
     setShowSuggestions(false);
   };
 
   const handleCityChange = async (text: string) => {
     setCity(text);
-    setUseCurrentLocation(false); // If user types, they're not using GPS
+    setLocationFromGPS(false); // User typing means it's not from GPS
     
     if (text.trim().length < 2) {
       setCitySuggestions([]);
@@ -147,27 +158,33 @@ export default function HumanScreen() {
   const handleContinue = () => {
     if (dateError) return;
     
-    // Update human details
     updateHuman({
       name,
       dateOfBirth,
       gender,
     });
 
-    // Update location
-    if (useCurrentLocation) {
-      updateLocation({
-        useCurrentLocation: true,
-        latitude: 37.7749, // Fake SF coordinates - in production, use actual GPS
-        longitude: -122.4194,
-        city: city || 'San Francisco, CA',
-      });
-    } else {
-      updateLocation({
-        useCurrentLocation: false,
-        city: city.trim(),
-        latitude: undefined,
-        longitude: undefined,
+    // Update location - save city from GPS or manual entry
+    const cityToSave = city.trim();
+    
+    const locationData = {
+      useCurrentLocation: locationFromGPS,
+      city: cityToSave,
+      latitude: locationFromGPS ? 37.7749 : undefined, // Fake SF coordinates - in production, use actual GPS
+      longitude: locationFromGPS ? -122.4194 : undefined,
+    };
+    
+    updateLocation(locationData);
+
+    // Save to database asynchronously (non-blocking)
+    if (user?.id) {
+      saveHumanData(user.id, {
+        name,
+        dateOfBirth,
+        gender,
+      }, locationData).catch((error) => {
+        console.error('[HumanScreen] Failed to save human data:', error);
+        // Don't block navigation on error
       });
     }
 
@@ -181,27 +198,38 @@ export default function HumanScreen() {
     is18Plus(dateOfBirth) &&
     gender !== null &&
     !dateError &&
-    (useCurrentLocation || city.trim().length > 0);
+    (locationFromGPS || city.trim().length > 0);
 
   return (
     <ScreenContainer>
       <ProgressBar
-        currentStep={1}
-        totalSteps={3}
-        stepTitles={['My Pack', 'Photos', 'Preferences']}
+        currentStep={2}
+        totalSteps={4}
+        stepTitles={['Your Pack', 'Little about you', 'Photos', 'Preferences']}
       />
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
-        <View style={styles.header}>
-          <AppText variant="heading" style={styles.title}>
-            Tell us about yourself
-          </AppText>
-          <AppText variant="body" style={styles.subtitle}>
-            Help others get to know you
-          </AppText>
-        </View>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.header}>
+            <View style={styles.headerTop}>
+            <TouchableOpacity
+              onPress={() => router.push('/(profile)/dogs')}
+              style={styles.backButton}
+            >
+              <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+            </TouchableOpacity>
+            </View>
+            <AppText variant="heading" style={styles.title}>
+              Little about yourself
+            </AppText>
+          </View>
 
         <View style={styles.form}>
           <View style={styles.field}>
@@ -239,58 +267,67 @@ export default function HumanScreen() {
             <AppText variant="body" style={styles.label}>
               Gender *
             </AppText>
-            <View style={styles.genderGrid}>
-              {GENDERS.map((option) => (
-                <TouchableOpacity
-                  key={option.value}
-                  style={[
-                    styles.genderButton,
-                    gender === option.value && styles.genderButtonSelected,
-                  ]}
-                  onPress={() => setGender(option.value)}
-                >
-                  <AppText
-                    variant="body"
-                    color={gender === option.value ? 'background' : 'text'}
-                  >
-                    {option.label}
-                  </AppText>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <TouchableOpacity
+              style={styles.dropdown}
+              onPress={() => setShowGenderDropdown(true)}
+            >
+              <AppText variant="body" style={[styles.dropdownText, !gender && styles.placeholder]}>
+                {gender ? GENDERS.find(g => g.value === gender)?.label : 'Select gender'}
+              </AppText>
+              <MaterialIcons name="arrow-drop-down" size={24} color={Colors.text} />
+            </TouchableOpacity>
+            <Modal
+              visible={showGenderDropdown}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setShowGenderDropdown(false)}
+            >
+              <TouchableOpacity
+                style={styles.modalOverlay}
+                activeOpacity={1}
+                onPress={() => setShowGenderDropdown(false)}
+              >
+                <View style={styles.dropdownOptions}>
+                  {GENDERS.map((option, index) => (
+                    <TouchableOpacity
+                      key={option.value}
+                      style={[
+                        styles.dropdownOption,
+                        index === GENDERS.length - 1 && styles.dropdownOptionLast,
+                        gender === option.value && styles.dropdownOptionSelected,
+                      ]}
+                      onPress={() => {
+                        setGender(option.value);
+                        setShowGenderDropdown(false);
+                      }}
+                    >
+                      <AppText
+                        variant="body"
+                        color={gender === option.value ? 'background' : 'text'}
+                      >
+                        {option.label}
+                      </AppText>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </TouchableOpacity>
+            </Modal>
           </View>
         </View>
 
-        {/* Location Section */}
-        <View style={styles.locationSection}>
-          <View style={styles.locationHeader}>
-            <AppText variant="heading" style={styles.locationTitle}>
-              Where does your pack usually hang out?
+          <View style={styles.field}>
+            <AppText variant="body" style={styles.label}>
+              City or Zip Code
             </AppText>
-          </View>
-
-          <View style={styles.locationControls}>
-            <AppButton
-              variant="primary"
-              onPress={handleUseCurrentLocation}
-              style={styles.locationButton}
-            >
-              Use my current location
-            </AppButton>
-
-            <View style={styles.cityInputContainer}>
-              <AppText variant="body" style={styles.label}>
-                City or Zip Code
-              </AppText>
+            <View style={styles.cityInputRow}>
               <View style={styles.inputWrapper}>
                 <TextInput
-                  style={[styles.input, useCurrentLocation && styles.inputDisabled]}
+                  style={styles.input}
                   value={city}
                   onChangeText={handleCityChange}
                   placeholder="Enter city name or zip code"
-                  editable={!useCurrentLocation}
                   onFocus={() => {
-                    if (citySuggestions.length > 0 && !useCurrentLocation) {
+                    if (citySuggestions.length > 0) {
                       setShowSuggestions(true);
                     }
                   }}
@@ -302,7 +339,7 @@ export default function HumanScreen() {
                     </AppText>
                   </View>
                 )}
-                {showSuggestions && citySuggestions.length > 0 && !useCurrentLocation && (
+                {showSuggestions && citySuggestions.length > 0 && (
                   <View style={styles.suggestionsContainer}>
                     {citySuggestions.map((suggestion, index) => (
                       <TouchableOpacity
@@ -316,13 +353,17 @@ export default function HumanScreen() {
                   </View>
                 )}
               </View>
+              <TouchableOpacity
+                style={styles.gpsButton}
+                onPress={handleUseCurrentLocation}
+              >
+                <MaterialIcons name="my-location" size={24} color={Colors.primary} />
+              </TouchableOpacity>
             </View>
-
             <AppText variant="caption" style={styles.privacyNote}>
               We'll never show your exact location.
             </AppText>
           </View>
-        </View>
 
         <View style={styles.buttonContainer}>
           <AppButton
@@ -334,18 +375,30 @@ export default function HumanScreen() {
             Continue
           </AppButton>
         </View>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
+  keyboardAvoidingView: {
+    flex: 1,
+  },
   scrollContent: {
-    flexGrow: 1,
     paddingBottom: Spacing.xl,
   },
   header: {
     marginBottom: Spacing.xl,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  backButton: {
+    padding: Spacing.sm,
+    marginLeft: -Spacing.sm,
   },
   title: {
     marginBottom: Spacing.sm,
@@ -354,10 +407,10 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   form: {
-    flex: 1,
+    marginTop: Spacing.md,
   },
   field: {
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
   },
   label: {
     marginBottom: Spacing.sm,
@@ -370,6 +423,10 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     fontSize: 16,
     minHeight: 44,
+    justifyContent: 'center',
+  },
+  placeholder: {
+    opacity: 0.5,
   },
   inputError: {
     borderColor: Colors.accent,
@@ -377,52 +434,61 @@ const styles = StyleSheet.create({
   errorText: {
     marginTop: Spacing.xs,
   },
-  genderGrid: {
+  dropdown: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-  },
-  genderButton: {
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'space-between',
     borderWidth: 1,
     borderColor: Colors.text,
-    backgroundColor: 'transparent',
-    minWidth: 120,
+    borderRadius: 8,
+    padding: Spacing.md,
+    minHeight: 44,
+  },
+  dropdownText: {
+    flex: 1,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  genderButtonSelected: {
+  dropdownOptions: {
+    backgroundColor: Colors.background,
+    borderRadius: 8,
+    minWidth: 200,
+    maxWidth: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  dropdownOption: {
+    padding: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.1)', // Colors.text with opacity
+  },
+  dropdownOptionLast: {
+    borderBottomWidth: 0,
+  },
+  dropdownOptionSelected: {
     backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
   },
-  locationSection: {
-    marginTop: Spacing.xl,
-    paddingTop: Spacing.xl,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(31, 41, 55, 0.2)', // Colors.text with opacity
-  },
-  locationHeader: {
-    marginBottom: Spacing.lg,
-  },
-  locationTitle: {
-    marginBottom: Spacing.sm,
-  },
-  locationControls: {
-    gap: Spacing.md,
-  },
-  locationButton: {
-    width: '100%',
-  },
-  cityInputContainer: {
-    marginTop: Spacing.md,
+  cityInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
   },
   inputWrapper: {
+    flex: 1,
     position: 'relative',
   },
-  inputDisabled: {
-    opacity: 0.6,
-    backgroundColor: 'rgba(31, 41, 55, 0.05)', // Colors.text with low opacity
+  gpsButton: {
+    padding: Spacing.md,
+    marginTop: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   suggestionsContainer: {
     position: 'absolute',
@@ -459,10 +525,9 @@ const styles = StyleSheet.create({
   privacyNote: {
     marginTop: Spacing.xs,
     opacity: 0.7,
-    textAlign: 'center',
   },
   buttonContainer: {
-    marginTop: Spacing.lg,
+    marginTop: Spacing.md,
   },
   button: {
     width: '100%',

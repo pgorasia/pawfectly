@@ -95,18 +95,18 @@ export async function getUserPhotos(userId: string): Promise<Photo[]> {
 }
 
 /**
- * Gets photos for a specific dog
- * dogId can be: 'dog1', 'dog2', 'dog3', etc. (simple string IDs)
+ * Gets photos for a specific dog slot
+ * dogSlot: 1, 2, or 3
  */
 export async function getDogPhotos(
   userId: string,
-  dogId: string
+  dogSlot: number
 ): Promise<Photo[]> {
   const { data, error } = await supabase
     .from('photos')
     .select('*')
     .eq('user_id', userId)
-    .eq('dog_id', dogId)
+    .eq('dog_slot', dogSlot)
     .eq('bucket_type', 'dog')
     .order('created_at', { ascending: false });
 
@@ -119,7 +119,7 @@ export async function getDogPhotos(
 
 /**
  * Gets human photos for a user
- * Human photos have dog_id = 'NA'
+ * Human photos have dog_slot = NULL
  */
 export async function getHumanPhotos(userId: string): Promise<Photo[]> {
   const { data, error } = await supabase
@@ -127,7 +127,7 @@ export async function getHumanPhotos(userId: string): Promise<Photo[]> {
     .select('*')
     .eq('user_id', userId)
     .eq('bucket_type', 'human')
-    .eq('dog_id', 'NA')
+    .is('dog_slot', null)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -174,6 +174,52 @@ export async function deletePhoto(photoId: string, userId: string): Promise<void
 
   if (dbError) {
     throw new Error(`Failed to delete photo record: ${dbError.message}`);
+  }
+}
+
+/**
+ * Deletes all photos for a specific dog slot (used when a dog is deleted)
+ */
+export async function deletePhotosByDogSlot(userId: string, dogSlot: number): Promise<void> {
+  // Get all photos for this slot
+  const { data: photos, error: fetchError } = await supabase
+    .from('photos')
+    .select('storage_path')
+    .eq('user_id', userId)
+    .eq('dog_slot', dogSlot);
+
+  if (fetchError) {
+    throw new Error(`Failed to fetch photos for slot ${dogSlot}: ${fetchError.message}`);
+  }
+
+  if (!photos || photos.length === 0) {
+    return; // No photos to delete
+  }
+
+  // Delete from storage
+  const storagePaths = photos.map(p => p.storage_path).filter(Boolean);
+  if (storagePaths.length > 0) {
+    const { error: storageError } = await supabase.storage
+      .from('photos')
+      .remove(storagePaths);
+
+    if (storageError) {
+      // Don't throw if bucket doesn't exist (might be in cleanup scenario)
+      if (!storageError.message.includes('not found') && !storageError.message.includes('Bucket not found')) {
+        console.warn(`Failed to delete photos from storage for slot ${dogSlot}: ${storageError.message}`);
+      }
+    }
+  }
+
+  // Delete database records
+  const { error: dbError } = await supabase
+    .from('photos')
+    .delete()
+    .eq('user_id', userId)
+    .eq('dog_slot', dogSlot);
+
+  if (dbError) {
+    throw new Error(`Failed to delete photos for slot ${dogSlot}: ${dbError.message}`);
   }
 }
 

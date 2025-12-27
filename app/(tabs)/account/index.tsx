@@ -4,67 +4,12 @@ import { useRouter } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { useAuth } from '@/contexts/AuthContext';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+import MyPackTab from './MyPackTab';
 
 type AccountTab = 'pack' | 'photos' | 'badges';
-
-function MyPackTab() {
-  const { draft } = useProfileDraft();
-
-  return (
-    <ScrollView style={styles.tabContent} contentContainerStyle={styles.tabContentContainer}>
-      <View style={styles.section}>
-        <AppText variant="heading" style={styles.sectionTitle}>
-          Your Pack
-        </AppText>
-        {draft.dogs.map((dog, index) => (
-          <View key={dog.id} style={styles.dogCard}>
-            <AppText variant="body" style={styles.dogName}>
-              {dog.name || `Dog ${index + 1}`}
-            </AppText>
-            <AppText variant="caption" style={styles.dogDetail}>
-              {dog.breed || 'No breed specified'}
-            </AppText>
-            <AppText variant="caption" style={styles.dogDetail}>
-              {dog.ageGroup || 'No age group'} • {dog.size || 'No size'} • {dog.energy || 'No energy level'}
-            </AppText>
-          </View>
-        ))}
-      </View>
-
-      <View style={styles.section}>
-        <AppText variant="heading" style={styles.sectionTitle}>
-          About You
-        </AppText>
-        <View style={styles.infoRow}>
-          <AppText variant="body" style={styles.infoLabel}>
-            Name:
-          </AppText>
-          <AppText variant="body" style={styles.infoValue}>
-            {draft.human.name || 'Not set'}
-          </AppText>
-        </View>
-        <View style={styles.infoRow}>
-          <AppText variant="body" style={styles.infoLabel}>
-            Location:
-          </AppText>
-          <AppText variant="body" style={styles.infoValue}>
-            {draft.location?.city || 'Not set'}
-          </AppText>
-        </View>
-      </View>
-
-      <TouchableOpacity style={styles.editButton}>
-        <AppText variant="body" style={styles.editButtonText}>
-          Edit My Pack
-        </AppText>
-      </TouchableOpacity>
-    </ScrollView>
-  );
-}
 
 function OurPhotosTab() {
   return (

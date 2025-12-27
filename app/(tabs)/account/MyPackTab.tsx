@@ -1,18 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
-import { ScreenContainer } from '@/components/common/ScreenContainer';
-import { ProgressBar } from '@/components/common/ProgressBar';
 import { AppText } from '@/components/ui/AppText';
-import { AppButton } from '@/components/ui/AppButton';
 import { Card } from '@/components/ui/Card';
-import { useProfileDraft, DogProfile, AgeGroup, DogSize, EnergyLevel, PlayStyle, Temperament, Gender } from '@/hooks/useProfileDraft';
+import { useProfileDraft, DogProfile, AgeGroup, DogSize, EnergyLevel, PlayStyle, Temperament } from '@/hooks/useProfileDraft';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { deletePhotosByDogSlot } from '@/services/supabase/photoService';
-import { saveDogData, setCurrentStep } from '@/services/supabase/onboardingService';
+import { updateProfileData } from '@/services/supabase/onboardingService';
+import { searchLocation } from '@/services/geocoding/locationService';
 
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
   { label: 'Puppy (0-1 year)', value: 'puppy' },
@@ -48,9 +45,7 @@ const TEMPERAMENTS: { label: string; value: Temperament }[] = [
   { label: 'Reactive', value: 'reactive' },
 ];
 
-// Popular breeds and cross breeds
 const BREEDS = [
-  // Popular pure breeds
   'Labrador Retriever',
   'Golden Retriever',
   'German Shepherd',
@@ -76,7 +71,6 @@ const BREEDS = [
   'Bernese Mountain Dog',
   'Cavalier King Charles Spaniel',
   'English Springer Spaniel',
-  // Popular cross breeds
   'Labradoodle',
   'Goldendoodle',
   'Cockapoo',
@@ -95,10 +89,7 @@ const BREEDS = [
   'Other',
 ];
 
-
-
 const MAX_DOGS = 3;
-
 
 function DogForm({
   dog,
@@ -362,44 +353,90 @@ function DogForm({
   );
 }
 
-export default function DogsScreen() {
-  const router = useRouter();
+export default function MyPackTab() {
   const { user } = useAuth();
   const { draft, updateDogs, updateHuman, updateLocation } = useProfileDraft();
-
-  // Set current step when page loads
-  React.useEffect(() => {
-    if (user?.id) {
-      setCurrentStep(user.id, 'pack').catch((error) => {
-        console.error('[DogsScreen] Failed to set current step:', error);
-      });
-    }
-  }, [user?.id]);
   const [dogs, setDogs] = useState<DogProfile[]>(
     draft.dogs.length > 0
       ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
           ...dog,
-          slot: dog.slot || (index + 1), // Ensure slot is set
+          slot: dog.slot || (index + 1),
         }))
-      : [
-          {
-            id: `dog-${Date.now()}`,
-            slot: 1,
-            name: '',
-            ageGroup: null,
-            breed: '',
-            size: null,
-            energy: null,
-            playStyles: [],
-            temperament: null,
-          },
-        ]
+      : []
   );
+  const [name, setName] = useState(draft.human.name || '');
+  const [city, setCity] = useState(draft.location?.city || '');
+  const [citySuggestions, setCitySuggestions] = useState<{ name: string; fullAddress: string }[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [locationFromGPS, setLocationFromGPS] = useState(draft.location?.useCurrentLocation || false);
+
+  // Autosave debounce timer
+  const autosaveTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // Load initial data
+  useEffect(() => {
+    if (draft.dogs.length > 0) {
+      setDogs(draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
+        ...dog,
+        slot: dog.slot || (index + 1),
+      })));
+    }
+    setName(draft.human.name || '');
+    setCity(draft.location?.city || '');
+    setLocationFromGPS(draft.location?.useCurrentLocation || false);
+  }, [draft]);
+
+  // Autosave function
+  const autosave = useCallback(async () => {
+    if (!user?.id) return;
+
+    try {
+      updateDogs(dogs);
+      updateHuman({ name });
+      updateLocation({
+        useCurrentLocation: locationFromGPS,
+        city: city.trim(),
+        latitude: locationFromGPS ? draft.location?.latitude : undefined,
+        longitude: locationFromGPS ? draft.location?.longitude : undefined,
+      });
+
+      await updateProfileData(
+        user.id,
+        dogs,
+        { name, dateOfBirth: draft.human.dateOfBirth, gender: draft.human.gender },
+        {
+          useCurrentLocation: locationFromGPS,
+          city: city.trim(),
+          latitude: locationFromGPS ? draft.location?.latitude : undefined,
+          longitude: locationFromGPS ? draft.location?.longitude : undefined,
+        }
+      );
+    } catch (error) {
+      console.error('[MyPackTab] Failed to autosave:', error);
+    }
+  }, [user, dogs, name, city, locationFromGPS, draft, updateDogs, updateHuman, updateLocation]);
+
+  // Debounced autosave
+  useEffect(() => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = setTimeout(() => {
+      autosave();
+    }, 1000); // Save after 1 second of no changes
+
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+      }
+    };
+  }, [dogs, name, city, locationFromGPS]);
 
   const handleAddDog = () => {
     if (dogs.length >= MAX_DOGS) return;
     
-    // Assign lowest available slot (1-3) not used by existing dogs
     const usedSlots = dogs.map(d => d.slot).filter(s => s >= 1 && s <= 3);
     let newSlot = 1;
     for (let i = 1; i <= 3; i++) {
@@ -427,17 +464,14 @@ export default function DogsScreen() {
     const dogToRemove = dogs.find((dog) => dog.id === id);
     if (!dogToRemove) return;
 
-    // Clear photos for this dog slot
     if (user?.id && dogToRemove.slot) {
       try {
         await deletePhotosByDogSlot(user.id, dogToRemove.slot);
       } catch (error) {
         console.error('Failed to delete photos for dog slot:', error);
-        // Continue with removing the dog even if photo deletion fails
       }
     }
 
-    // Remove dog from state
     setDogs(dogs.filter((dog) => dog.id !== id));
   };
 
@@ -445,60 +479,57 @@ export default function DogsScreen() {
     setDogs(dogs.map((dog) => (dog.id === id ? { ...dog, ...updates } : dog)));
   };
 
-
-  const handleContinue = () => {
-    updateDogs(dogs);
-
-    // Save to database asynchronously (non-blocking)
-    if (user?.id) {
-      // Save only dogs for now, human data will be saved on the human page
-      saveDogData(user.id, dogs).catch((error) => {
-        console.error('[DogsScreen] Failed to save dog data:', error);
-        // Don't block navigation on error
-      });
+  const handleCityChange = async (text: string) => {
+    setCity(text);
+    setLocationFromGPS(false);
+    
+    if (text.trim().length < 2) {
+      setCitySuggestions([]);
+      setShowSuggestions(false);
+      return;
     }
 
-    router.push('/(profile)/human');
+    setIsSearching(true);
+    try {
+      const results = await searchLocation(text);
+      setCitySuggestions(results);
+      setShowSuggestions(results.length > 0);
+    } catch (error) {
+      console.error('Error fetching city suggestions:', error);
+      setCitySuggestions([]);
+      setShowSuggestions(false);
+    } finally {
+      setIsSearching(false);
+    }
   };
 
-  const dogsValid = dogs.length > 0 && dogs.every((dog) => {
-    return (
-      dog.name.trim() &&
-      dog.ageGroup &&
-      dog.breed &&
-      dog.size &&
-      dog.energy &&
-      dog.playStyles.length > 0 &&
-      dog.temperament !== null
-    );
-  });
+  const selectCity = (selectedCity: { name: string; fullAddress: string }) => {
+    setCity(selectedCity.fullAddress);
+    setShowSuggestions(false);
+  };
 
-  const canContinue = dogsValid;
+  const handleUseCurrentLocation = () => {
+    const detectedCity = 'San Francisco, CA'; // This would come from reverse geocoding
+    setCity(detectedCity);
+    setLocationFromGPS(true);
+    setShowSuggestions(false);
+  };
 
   return (
-    <ScreenContainer>
-      <ProgressBar
-        currentStep={1}
-        totalSteps={4}
-        stepTitles={['Your Pack', 'Little about you', 'Photos', 'Preferences']}
-      />
-      <KeyboardAvoidingView
-        style={styles.keyboardAvoidingView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+    <KeyboardAvoidingView
+      style={styles.keyboardAvoidingView}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-        <View style={styles.header}>
-          <AppText variant="heading" style={styles.title}>
+        <View style={styles.section}>
+          <AppText variant="heading" style={styles.sectionTitle}>
             Your Pack
           </AppText>
-        </View>
-
-        <View style={styles.dogsList}>
           {dogs.map((dog) => (
             <DogForm
               key={dog.id}
@@ -508,9 +539,6 @@ export default function DogsScreen() {
               canRemove={dogs.length > 1}
             />
           ))}
-        </View>
-
-        <View style={styles.addButtonContainer}>
           {dogs.length < MAX_DOGS && (
             <TouchableOpacity 
               onPress={handleAddDog} 
@@ -531,20 +559,105 @@ export default function DogsScreen() {
           )}
         </View>
 
+        <View style={styles.section}>
+          <AppText variant="heading" style={styles.sectionTitle}>
+            Little about yourself
+          </AppText>
 
-        <View style={styles.buttonContainer}>
-          <AppButton
-            variant="primary"
-            onPress={handleContinue}
-            disabled={!canContinue}
-            style={styles.button}
-          >
-            Continue
-          </AppButton>
+          <View style={styles.field}>
+            <AppText variant="body" style={styles.label}>
+              Name *
+            </AppText>
+            <TextInput
+              style={styles.input}
+              value={name}
+              onChangeText={setName}
+              placeholder="Enter your name"
+            />
+          </View>
+
+          <View style={styles.field}>
+            <AppText variant="body" style={styles.label}>
+              Date of Birth
+            </AppText>
+            <View style={[styles.input, styles.disabledInput]}>
+              <AppText variant="body" style={styles.disabledText}>
+                {draft.human.dateOfBirth || 'Not set'}
+              </AppText>
+            </View>
+            <AppText variant="caption" style={styles.hint}>
+              Date of birth cannot be changed
+            </AppText>
+          </View>
+
+          <View style={styles.field}>
+            <AppText variant="body" style={styles.label}>
+              Gender
+            </AppText>
+            <View style={[styles.input, styles.disabledInput]}>
+              <AppText variant="body" style={styles.disabledText}>
+                {draft.human.gender 
+                  ? draft.human.gender.charAt(0).toUpperCase() + draft.human.gender.slice(1).replace(/-/g, ' ')
+                  : 'Not set'}
+              </AppText>
+            </View>
+            <AppText variant="caption" style={styles.hint}>
+              Gender cannot be changed
+            </AppText>
+          </View>
+
+          <View style={styles.field}>
+            <AppText variant="body" style={styles.label}>
+              City or Zip Code
+            </AppText>
+            <View style={styles.cityInputRow}>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.input}
+                  value={city}
+                  onChangeText={handleCityChange}
+                  placeholder="Enter city name or zip code"
+                  onFocus={() => {
+                    if (citySuggestions.length > 0) {
+                      setShowSuggestions(true);
+                    }
+                  }}
+                />
+                {isSearching && (
+                  <View style={styles.searchingIndicator}>
+                    <AppText variant="caption" style={styles.searchingText}>
+                      Searching...
+                    </AppText>
+                  </View>
+                )}
+                {showSuggestions && citySuggestions.length > 0 && (
+                  <View style={styles.suggestionsContainer}>
+                    {citySuggestions.map((suggestion, index) => (
+                      <TouchableOpacity
+                        key={index}
+                        style={styles.suggestionItem}
+                        onPress={() => selectCity(suggestion)}
+                      >
+                        <AppText variant="body">{suggestion.fullAddress}</AppText>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+              <TouchableOpacity
+                style={styles.gpsButton}
+                onPress={handleUseCurrentLocation}
+              >
+                <MaterialIcons name="my-location" size={24} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+            <AppText variant="caption" style={styles.privacyNote}>
+              We'll never show your exact location.
+            </AppText>
+          </View>
         </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </ScreenContainer>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -553,20 +666,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
+    padding: Spacing.lg,
     paddingBottom: Spacing.xl,
   },
-  header: {
+  section: {
     marginBottom: Spacing.xl,
   },
-  title: {
-    marginBottom: Spacing.sm,
-  },
-  subtitle: {
-    opacity: 0.7,
-  },
-  dogsList: {
-    gap: Spacing.lg,
-    marginBottom: Spacing.lg,
+  sectionTitle: {
+    marginBottom: Spacing.md,
   },
   dogCard: {
     marginBottom: Spacing.md,
@@ -591,7 +698,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   hint: {
-    marginBottom: Spacing.xs,
+    marginTop: Spacing.xs,
     opacity: 0.6,
   },
   input: {
@@ -602,6 +709,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     minHeight: 44,
     justifyContent: 'center',
+  },
+  disabledInput: {
+    backgroundColor: 'rgba(31, 41, 55, 0.05)',
+    borderColor: 'rgba(31, 41, 55, 0.2)',
+  },
+  disabledText: {
+    opacity: 0.6,
   },
   placeholder: {
     opacity: 0.5,
@@ -643,9 +757,6 @@ const styles = StyleSheet.create({
   playStyleButtonDisabled: {
     opacity: 0.3,
   },
-  disabledText: {
-    opacity: 0.5,
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
@@ -686,28 +797,66 @@ const styles = StyleSheet.create({
     opacity: 1,
     borderBottomColor: Colors.primary,
   },
-  addButtonContainer: {
-    marginBottom: Spacing.xl,
-  },
   addButton: {
     padding: Spacing.md,
     alignItems: 'center',
-  },
-  addButtonDisabled: {
-    opacity: 0.5,
-  },
-  addButtonTextDisabled: {
-    opacity: 0.6,
+    marginTop: Spacing.md,
   },
   helperText: {
     textAlign: 'center',
     marginTop: Spacing.sm,
     opacity: 0.7,
   },
-  buttonContainer: {
-    marginTop: Spacing.md,
+  cityInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
   },
-  button: {
-    width: '100%',
+  inputWrapper: {
+    flex: 1,
+    position: 'relative',
+  },
+  gpsButton: {
+    padding: Spacing.md,
+    marginTop: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  suggestionsContainer: {
+    position: 'absolute',
+    top: 44,
+    left: 0,
+    right: 0,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.text,
+    borderRadius: 8,
+    marginTop: Spacing.xs,
+    maxHeight: 200,
+    zIndex: 1000,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  suggestionItem: {
+    padding: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.text,
+    opacity: 0.5,
+  },
+  searchingIndicator: {
+    padding: Spacing.sm,
+    alignItems: 'center',
+  },
+  searchingText: {
+    opacity: 0.6,
+    fontStyle: 'italic',
+  },
+  privacyNote: {
+    marginTop: Spacing.xs,
+    opacity: 0.7,
   },
 });
+

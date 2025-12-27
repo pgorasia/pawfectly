@@ -20,7 +20,7 @@ export interface ValidationResult {
  * - At least 1 human photo (from human bucket OR any photo with contains_both=true)
  */
 export function usePhotoValidation(
-  dogBuckets: Record<string, PhotoBucketState>,
+  dogBuckets: Record<number, PhotoBucketState>,
   humanBucket: PhotoBucketState,
   hasHumanDogPhoto: boolean
 ): ValidationResult {
@@ -31,9 +31,9 @@ export function usePhotoValidation(
     // Count dog photos (from dog buckets with contains_dog=true)
     // Only count photos that are NOT NEITHER/UNKNOWN
     let dogPhotosCount = 0;
-    const dogIds = Object.keys(dogBuckets);
-    for (const dogId of dogIds) {
-      const bucket = dogBuckets[dogId];
+    const dogSlots = Object.keys(dogBuckets).map(Number);
+    for (const slot of dogSlots) {
+      const bucket = dogBuckets[slot];
       const validDogPhotos = bucket.photos.filter(
         (photo) => 
           photo.contains_dog && 
