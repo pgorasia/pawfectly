@@ -8,29 +8,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import MyPackTab from './MyPackTab';
+import OurPhotosTab from './OurPhotosTab';
 
 type AccountTab = 'pack' | 'photos' | 'badges';
-
-function OurPhotosTab() {
-  return (
-    <ScrollView style={styles.tabContent} contentContainerStyle={styles.tabContentContainer}>
-      <View style={styles.section}>
-        <AppText variant="heading" style={styles.sectionTitle}>
-          Your Photos
-        </AppText>
-        <AppText variant="body" style={styles.placeholderText}>
-          Photos will appear here
-        </AppText>
-      </View>
-
-      <TouchableOpacity style={styles.editButton}>
-        <AppText variant="body" style={styles.editButtonText}>
-          Edit Photos
-        </AppText>
-      </TouchableOpacity>
-    </ScrollView>
-  );
-}
 
 function MyBadgesTab() {
   const { user } = useAuth();
@@ -131,18 +111,21 @@ export default function AccountScreen() {
   return (
     <ScreenContainer>
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={() => router.push('/(tabs)/account/settings')}
-        >
-          <IconSymbol name="gearshape.fill" size={24} color={Colors.text} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.headerButton}
-          onPress={() => router.push('/(profile)/preferences')}
-        >
-          <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
-        </TouchableOpacity>
+        <View style={styles.headerSpacer} />
+        <View style={styles.headerIcons}>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => router.push('/(tabs)/account/settings')}
+          >
+            <IconSymbol name="gearshape.fill" size={24} color={Colors.text} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => router.push('/(profile)/preferences')}
+          >
+            <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.tabBar}>
@@ -199,6 +182,13 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+  },
+  headerSpacer: {
+    flex: 1,
+  },
+  headerIcons: {
+    flexDirection: 'row',
+    gap: Spacing.md,
   },
   headerButton: {
     padding: Spacing.sm,

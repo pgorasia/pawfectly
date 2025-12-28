@@ -17,12 +17,6 @@ export default function FeedScreen() {
         <View style={styles.headerIcons}>
           <TouchableOpacity
             style={styles.headerButton}
-            onPress={() => router.push('/(tabs)/account/settings')}
-          >
-            <IconSymbol name="gearshape.fill" size={24} color={Colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerButton}
             onPress={() => router.push('/(profile)/preferences')}
           >
             <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />

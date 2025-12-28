@@ -382,7 +382,60 @@ export async function savePackData(
 }
 
 /**
- * Save preferences data
+ * Update preferences data without affecting onboarding state
+ * Use this for editing preferences after onboarding is complete
+ */
+export async function updatePreferencesData(
+  userId: string,
+  connectionStyles: ConnectionStyle[],
+  preferences: {
+    'pawsome-pals': Preferences | null;
+    'pawfect-match': Preferences | null;
+  }
+): Promise<void> {
+  try {
+    const prefsData: any = {
+      user_id: userId,
+      pals_enabled: connectionStyles.includes('pawsome-pals'),
+      match_enabled: connectionStyles.includes('pawfect-match'),
+    };
+
+    // Set pawsome-pals preferences if enabled
+    if (connectionStyles.includes('pawsome-pals') && preferences['pawsome-pals']) {
+      const palsPrefs = preferences['pawsome-pals'];
+      prefsData.pals_preferred_genders = palsPrefs.preferredGenders.filter(g => g !== 'any');
+      prefsData.pals_age_min = palsPrefs.ageRange.min || null;
+      prefsData.pals_age_max = palsPrefs.ageRange.max || null;
+      prefsData.pals_distance_miles = palsPrefs.distance || null;
+    }
+
+    // Set pawfect-match preferences if enabled
+    if (connectionStyles.includes('pawfect-match') && preferences['pawfect-match']) {
+      const matchPrefs = preferences['pawfect-match'];
+      prefsData.match_preferred_genders = matchPrefs.preferredGenders.filter(g => g !== 'any');
+      prefsData.match_age_min = matchPrefs.ageRange.min || null;
+      prefsData.match_age_max = matchPrefs.ageRange.max || null;
+      prefsData.match_distance_miles = matchPrefs.distance || null;
+    }
+
+    const { error } = await supabase
+      .from('preferences')
+      .upsert(prefsData, { onConflict: 'user_id' });
+
+    if (error) {
+      console.error('[OnboardingService] Failed to update preferences:', error);
+      throw new Error(`Failed to update preferences: ${error.message}`);
+    }
+
+    // Do NOT update onboarding state - this is just a preferences update
+  } catch (error) {
+    console.error('[OnboardingService] Error updating preferences data:', error);
+    throw error;
+  }
+}
+
+/**
+ * Save preferences data during onboarding
  */
 export async function savePreferencesData(
   userId: string,

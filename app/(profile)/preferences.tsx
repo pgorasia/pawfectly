@@ -6,16 +6,37 @@ import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
 import { Card } from '@/components/ui/Card';
 import { useProfileDraft, Gender, Preferences, ConnectionStyle } from '@/hooks/useProfileDraft';
+import { useAuth } from '@/contexts/AuthContext';
+import { updatePreferencesData } from '@/services/supabase/onboardingService';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+
+const CONNECTION_STYLES: {
+  emoji: string;
+  id: ConnectionStyle;
+  title: string;
+  description: string;
+}[] = [
+  {
+    emoji: '🐾',
+    id: 'pawsome-pals',
+    title: 'Pawsome Pals',
+    description: 'Let your dog lead the way to new friends',
+  },
+  {
+    emoji: '💛',
+    id: 'pawfect-match',
+    title: 'Pawfect Match',
+    description: 'Find someone who loves your dog as much as you do',
+  },
+];
 
 const GENDERS: { label: string; value: Gender }[] = [
   { label: 'Male', value: 'male' },
   { label: 'Female', value: 'female' },
   { label: 'Trans', value: 'trans' },
   { label: 'Non-binary', value: 'non-binary' },
-  { label: 'Self-described', value: 'self-described' },
-  { label: 'Prefer not to say', value: 'prefer-not-to-say' },
+  { label: 'Any', value: 'any' },
 ];
 
 const CONNECTION_STYLE_LABELS: Record<ConnectionStyle, string> = {
@@ -46,9 +67,25 @@ function PreferencesSection({
   );
 
   const toggleGender = (gender: Gender) => {
-    const newGenders = preferredGenders.includes(gender)
-      ? preferredGenders.filter((g) => g !== gender)
-      : [...preferredGenders, gender];
+    let newGenders: Gender[];
+    
+    if (gender === 'any') {
+      // If "Any" is selected, clear all other selections and set only "any"
+      if (preferredGenders.includes('any')) {
+        newGenders = [];
+      } else {
+        newGenders = ['any'];
+      }
+    } else {
+      // If a specific gender is selected, remove "any" if present
+      if (preferredGenders.includes(gender)) {
+        newGenders = preferredGenders.filter((g) => g !== gender);
+      } else {
+        newGenders = preferredGenders.filter((g) => g !== 'any');
+        newGenders.push(gender);
+      }
+    }
+    
     setPreferredGenders(newGenders);
     onUpdate({
       preferredGenders: newGenders,
@@ -183,22 +220,38 @@ function PreferencesSection({
 
 export default function PreferencesScreen() {
   const router = useRouter();
-  const { draft, updatePreferences } = useProfileDraft();
-  const hasPawsomePals = draft.connectionStyles.includes('pawsome-pals');
-  const hasPawfectMatch = draft.connectionStyles.includes('pawfect-match');
+  const { user } = useAuth();
+  const { draft, updateConnectionStyles, updatePreferences } = useProfileDraft();
+  const [selectedStyles, setSelectedStyles] = useState<ConnectionStyle[]>(
+    draft.connectionStyles || []
+  );
+
+  const toggleStyle = (style: ConnectionStyle) => {
+    const newStyles = selectedStyles.includes(style)
+      ? selectedStyles.filter((s) => s !== style)
+      : [...selectedStyles, style];
+    setSelectedStyles(newStyles);
+    updateConnectionStyles(newStyles);
+  };
 
   const handleUpdatePreferences = (style: ConnectionStyle, prefs: Preferences) => {
     updatePreferences(style, prefs);
   };
 
-  const handleContinue = () => {
-    // If coming from account page, go back; otherwise go to tabs
-    if (router.canGoBack()) {
+  const handleSave = async () => {
+    if (!user?.id) return;
+
+    try {
+      await updatePreferencesData(user.id, selectedStyles, draft.preferences);
       router.back();
-    } else {
-      router.push('/(tabs)');
+    } catch (error) {
+      console.error('[PreferencesScreen] Failed to save preferences:', error);
+      // Still go back even if save fails
+      router.back();
     }
   };
+
+  const canSave = selectedStyles.length > 0;
 
   return (
     <ScreenContainer>
@@ -208,14 +261,65 @@ export default function PreferencesScreen() {
       >
         <View style={styles.header}>
           <AppText variant="heading" style={styles.title}>
-            Your Preferences
+            How would you like to connect?
           </AppText>
           <AppText variant="body" style={styles.subtitle}>
-            Set your preferences for each connection type (you can change these later)
+            All connections are dog-approved first.
           </AppText>
         </View>
 
-        {hasPawsomePals && (
+        <View style={styles.options}>
+          {CONNECTION_STYLES.map((style) => {
+            const isSelected = selectedStyles.includes(style.id);
+            return (
+              <TouchableOpacity
+                key={style.id}
+                style={[
+                  styles.optionCard,
+                  isSelected && styles.optionCardSelected,
+                ]}
+                onPress={() => toggleStyle(style.id)}
+              >
+                <Card style={styles.cardContent}>
+                  <View style={styles.optionHeader}>
+                    <AppText variant="heading" style={styles.emoji}>
+                      {style.emoji}
+                    </AppText>
+                    <View style={styles.optionText}>
+                      <AppText variant="body" style={styles.optionTitle}>
+                        {style.title}
+                      </AppText>
+                      <AppText variant="caption" style={styles.optionDescription}>
+                        {style.description}
+                      </AppText>
+                    </View>
+                    <View style={styles.checkboxContainer}>
+                      <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
+                        {isSelected && (
+                          <AppText variant="body" style={styles.checkmark}>
+                            ✓
+                          </AppText>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                </Card>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <AppText variant="caption" style={styles.changeLaterText}>
+          You can always change this later
+        </AppText>
+
+        {selectedStyles.length === 0 && (
+          <AppText variant="caption" color={Colors.accent} style={styles.errorText}>
+            Please select at least one connection style
+          </AppText>
+        )}
+
+        {selectedStyles.includes('pawsome-pals') && (
           <PreferencesSection
             style="pawsome-pals"
             preferences={draft.preferences['pawsome-pals']}
@@ -223,7 +327,7 @@ export default function PreferencesScreen() {
           />
         )}
 
-        {hasPawfectMatch && (
+        {selectedStyles.includes('pawfect-match') && (
           <PreferencesSection
             style="pawfect-match"
             preferences={draft.preferences['pawfect-match']}
@@ -234,10 +338,11 @@ export default function PreferencesScreen() {
         <View style={styles.buttonContainer}>
           <AppButton
             variant="primary"
-            onPress={handleContinue}
+            onPress={handleSave}
+            disabled={!canSave}
             style={styles.button}
           >
-            {router.canGoBack() ? 'Save' : 'Start exploring'}
+            Save
           </AppButton>
         </View>
       </ScrollView>
@@ -248,6 +353,7 @@ export default function PreferencesScreen() {
 const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
+    padding: Spacing.lg,
     paddingBottom: Spacing.xl,
   },
   header: {
@@ -258,6 +364,72 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     opacity: 0.7,
+  },
+  options: {
+    gap: Spacing.md,
+    marginBottom: Spacing.lg,
+  },
+  optionCard: {
+    marginBottom: Spacing.sm,
+  },
+  optionCardSelected: {
+    borderWidth: 2,
+    borderColor: Colors.primary,
+    borderRadius: 12,
+  },
+  cardContent: {
+    padding: Spacing.lg,
+  },
+  optionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  emoji: {
+    fontSize: 32,
+    marginRight: Spacing.md,
+  },
+  optionText: {
+    flex: 1,
+  },
+  optionTitle: {
+    fontWeight: '600',
+    marginBottom: Spacing.xs,
+  },
+  optionDescription: {
+    opacity: 0.7,
+  },
+  checkboxContainer: {
+    marginLeft: Spacing.md,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: Colors.text,
+    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxSelected: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  checkmark: {
+    color: Colors.background,
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  changeLaterText: {
+    textAlign: 'center',
+    marginTop: Spacing.md,
+    marginBottom: Spacing.lg,
+    opacity: 0.6,
+    fontStyle: 'italic',
+  },
+  errorText: {
+    textAlign: 'center',
+    marginBottom: Spacing.md,
   },
   preferenceCard: {
     marginBottom: Spacing.xl,
