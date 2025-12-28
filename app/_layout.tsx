@@ -1,5 +1,6 @@
 import { Stack, useRouter } from "expo-router";
 import { useEffect } from "react";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ProfileDraftProvider } from "@/hooks/useProfileDraft";
 import { setupNotificationHandler } from "@/services/notifications/photoNotifications";
@@ -35,11 +36,13 @@ function NotificationHandler() {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <ProfileDraftProvider>
-        <NotificationHandler />
-        <Stack screenOptions={{ headerShown: false }} />
-      </ProfileDraftProvider>
-    </AuthProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <ProfileDraftProvider>
+          <NotificationHandler />
+          <Stack screenOptions={{ headerShown: false }} />
+        </ProfileDraftProvider>
+      </AuthProvider>
+    </GestureHandlerRootView>
   );
 }

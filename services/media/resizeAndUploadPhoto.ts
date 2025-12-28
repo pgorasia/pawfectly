@@ -24,6 +24,8 @@ export interface ResizeAndUploadPhotoParams {
   mimeType?: string;
   // Deprecated: dogId kept for backwards compatibility, use dogSlot instead
   dogId?: string;
+  // Optional: If provided, this URI is already cropped and ready for resize/upload
+  croppedUri?: string;
 }
 
 export interface ResizeAndUploadPhotoResult {
@@ -138,7 +140,7 @@ function generateStoragePath(
 export async function resizeAndUploadPhoto(
   params: ResizeAndUploadPhotoParams
 ): Promise<ResizeAndUploadPhotoResult> {
-  const { userId, bucketType, dogSlot, localUri, mimeType, dogId } = params;
+  const { userId, bucketType, dogSlot, localUri, mimeType, dogId, croppedUri } = params;
 
   try {
     // Step 1: Validate MIME type
@@ -146,8 +148,11 @@ export async function resizeAndUploadPhoto(
       validateImageMimeType(mimeType);
     }
 
-    // Step 2: Get original image dimensions (no manipulation, just read metadata)
-    const originalInfo = await manipulateAsync(localUri, [], {
+    // Use cropped URI if provided, otherwise use original
+    const sourceUri = croppedUri || localUri;
+
+    // Step 2: Get image dimensions (no manipulation, just read metadata)
+    const originalInfo = await manipulateAsync(sourceUri, [], {
       format: undefined,
     });
     
@@ -175,7 +180,7 @@ export async function resizeAndUploadPhoto(
     }
 
     // Step 4: Resize and compress to JPEG quality 0.82
-    const manipulatedResult = await manipulateAsync(localUri, actions, {
+    const manipulatedResult = await manipulateAsync(sourceUri, actions, {
       compress: JPEG_QUALITY,
       format: SaveFormat.JPEG,
     });

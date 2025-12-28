@@ -13,10 +13,18 @@ import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
 import { DogPhotoBucket } from '@/components/dog/DogPhotoBucket';
 import { HumanPhotoBucket } from '@/components/human/HumanPhotoBucket';
+import { CropperModal } from '@/components/media/CropperModal';
+import { useCropperModal } from '@/hooks/useCropperModal';
 import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { usePhotoBuckets } from '@/hooks/usePhotoBuckets';
 import { useAuth } from '@/contexts/AuthContext';
 import { setCurrentStep } from '@/services/supabase/onboardingService';
+import { pickImage } from '@/services/media/imagePicker';
+import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
+import { cropImage } from '@/services/media/cropImage';
+import { resizeAndUploadPhoto } from '@/services/media/resizeAndUploadPhoto';
+import { getCurrentUserId } from '@/services/supabase/photoService';
+import { supabase } from '@/services/supabase/supabaseClient';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 
@@ -24,6 +32,9 @@ export default function PhotosScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { draft } = useProfileDraft();
+
+  // Cropper modal hook
+  const { isOpen, imageUri, openCropper, closeCropper, handleConfirm } = useCropperModal();
 
   // Set current step when page loads
   React.useEffect(() => {
@@ -47,6 +58,100 @@ export default function PhotosScreen() {
     replacePhoto,
     hasHumanDogPhoto,
   } = usePhotoBuckets(dogSlots);
+
+  // Store pending upload info for after cropper confirms
+  const pendingUploadRef = React.useRef<{
+    bucketType: 'human' | 'dog';
+    dogSlot?: number;
+    photoId?: string; // For replace operations
+  } | null>(null);
+
+  // Wrapper function that shows cropper before uploading
+  const handleUploadWithCropper = React.useCallback(
+    async (bucketType: 'human' | 'dog', dogSlot?: number) => {
+      try {
+        // Step 1: Pick image
+        const pickedImage = await pickImage({
+          allowsEditing: false,
+          quality: 0.8,
+        });
+
+        if (!pickedImage) {
+          // User cancelled image picker
+          return;
+        }
+
+        // Step 2: Show cropper modal
+        pendingUploadRef.current = { bucketType, dogSlot };
+        await openCropper(pickedImage.uri);
+      } catch (error) {
+        console.error('[PhotosScreen] Failed to pick image:', error);
+      }
+    },
+    [openCropper]
+  );
+
+  // Wrapper function that shows cropper before replacing
+  const handleReplaceWithCropper = React.useCallback(
+    async (photoId: string, bucketType: 'human' | 'dog', dogSlot?: number) => {
+      try {
+        // Step 1: Pick image
+        const pickedImage = await pickImage({
+          allowsEditing: false,
+          quality: 0.8,
+        });
+
+        if (!pickedImage) {
+          // User cancelled image picker
+          return;
+        }
+
+        // Step 2: Show cropper modal with replace context
+        pendingUploadRef.current = { bucketType, dogSlot, photoId };
+        await openCropper(pickedImage.uri);
+      } catch (error) {
+        console.error('[PhotosScreen] Failed to pick image for replace:', error);
+      }
+    },
+    [openCropper]
+  );
+
+  // Handle cropper confirmation - crop image and upload
+  const handleCropperConfirm = React.useCallback(
+    async (transform: { scale: number; translateX: number; translateY: number }) => {
+      if (!pendingUploadRef.current || !imageUri) {
+        closeCropper();
+        return;
+      }
+
+      const { bucketType, dogSlot, photoId } = pendingUploadRef.current;
+      const currentImageUri = imageUri;
+      pendingUploadRef.current = null;
+
+      // Close cropper first
+      closeCropper();
+
+      try {
+        // Step 1: Crop the image based on transform
+        const croppedUri = await cropImage({
+          imageUri: currentImageUri,
+          transform,
+        });
+
+        // Step 2: If replacing, delete old photo first
+        if (photoId && user?.id) {
+          await removePhoto(photoId, bucketType, dogSlot);
+        }
+
+        // Step 3: Upload the cropped image using uploadPhotoToBucket
+        // Pass both original URI (for reference) and cropped URI (for upload)
+        await uploadPhotoToBucket(bucketType, dogSlot, currentImageUri, croppedUri);
+      } catch (error) {
+        console.error('[PhotosScreen] Failed to crop and upload:', error);
+      }
+    },
+    [imageUri, closeCropper, uploadPhotoToBucket, removePhoto, user]
+  );
 
   // Check if continue button should be enabled
   // Enabled only if each bucket has at least one photo (even if validation is in progress)
@@ -115,9 +220,9 @@ export default function PhotosScreen() {
               dogName={dog.name || 'Unnamed Dog'}
               dogId={dog.slot.toString()}
               bucket={bucket}
-              onUpload={() => uploadPhotoToBucket('dog', dog.slot)}
+              onUpload={() => handleUploadWithCropper('dog', dog.slot)}
               onRemove={(photoId) => removePhoto(photoId, 'dog', dog.slot)}
-              onReplace={(photoId) => replacePhoto(photoId, 'dog', dog.slot)}
+              onReplace={(photoId) => handleReplaceWithCropper(photoId, 'dog', dog.slot)}
             />
           );
         })}
@@ -125,10 +230,18 @@ export default function PhotosScreen() {
         {/* Human Photos */}
         <HumanPhotoBucket
           bucket={humanBucket}
-          onUpload={() => uploadPhotoToBucket('human')}
+          onUpload={() => handleUploadWithCropper('human')}
           onRemove={(photoId) => removePhoto(photoId, 'human')}
-          onReplace={(photoId) => replacePhoto(photoId, 'human')}
+          onReplace={(photoId) => handleReplaceWithCropper(photoId, 'human')}
           hasHumanDogPhoto={hasHumanDogPhoto}
+        />
+
+        {/* Cropper Modal */}
+        <CropperModal
+          visible={isOpen}
+          imageUri={imageUri || ''}
+          onCancel={closeCropper}
+          onConfirm={handleCropperConfirm}
         />
 
         <View style={styles.buttonContainer}>

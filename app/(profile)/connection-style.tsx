@@ -56,7 +56,9 @@ function PreferencesSection({
   onUpdate: (prefs: Preferences) => void;
 }) {
   const [preferredGenders, setPreferredGenders] = useState<Gender[]>(
-    preferences?.preferredGenders || []
+    preferences?.preferredGenders && preferences.preferredGenders.length > 0
+      ? preferences.preferredGenders
+      : ['any'] // Default to "Any" for new users
   );
   const [ageMin, setAgeMin] = useState(
     preferences?.ageRange.min?.toString() || ''
@@ -67,6 +69,23 @@ function PreferencesSection({
   const [distance, setDistance] = useState(
     preferences?.distance?.toString() || '25'
   );
+
+  // Initialize with default "Any" if preferences are null/empty
+  useEffect(() => {
+    if (!preferences || !preferences.preferredGenders || preferences.preferredGenders.length === 0) {
+      // Set default to 'any' and notify parent
+      setPreferredGenders(['any']);
+      onUpdate({
+        preferredGenders: ['any'],
+        ageRange: {
+          min: ageMin ? parseInt(ageMin, 10) : null,
+          max: ageMax ? parseInt(ageMax, 10) : null,
+        },
+        distance: distance ? parseInt(distance, 10) : 25,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount
 
   const toggleGender = (gender: Gender) => {
     let newGenders: Gender[];

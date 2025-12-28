@@ -10,7 +10,7 @@ export type DogSize = 'small' | 'medium' | 'large';
 export type EnergyLevel = 'low' | 'medium' | 'high';
 export type PlayStyle = 'fetch' | 'tug' | 'chase' | 'wrestle' | 'gentle' | 'rough';
 export type Temperament = 'calm' | 'playful' | 'reactive';
-export type Gender = 'male' | 'female' | 'trans' | 'non-binary' | 'self-described' | 'prefer-not-to-say' | 'any';
+export type Gender = 'male' | 'female' | 'trans' | 'non-binary' | 'prefer-not-to-say' | 'any';
 export type ConnectionStyle = 'pawsome-pals' | 'pawfect-match';
 
 export interface DogProfile {

@@ -29,7 +29,9 @@ export interface UsePhotoBucketsReturn {
   humanBucket: PhotoBucketState;
   uploadPhotoToBucket: (
     bucketType: BucketType,
-    dogSlot?: number
+    dogSlot?: number,
+    imageUri?: string,
+    croppedUri?: string
   ) => Promise<void>;
   removePhoto: (photoId: string, bucketType: BucketType, dogSlot?: number) => Promise<void>;
   replacePhoto: (photoId: string, bucketType: BucketType, dogSlot?: number) => Promise<void>;
@@ -153,7 +155,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
   }, [user?.id, refreshPhotos]);
 
   const uploadPhotoToBucket = useCallback(
-    async (bucketType: BucketType, dogSlot?: number) => {
+    async (bucketType: BucketType, dogSlot?: number, imageUri?: string, croppedUri?: string) => {
       // Set uploading state
       if (bucketType === 'dog' && dogSlot) {
         setDogBuckets((prev) => ({
@@ -177,6 +179,8 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         const result = await uploadPhotoWithValidation({
           bucketType,
           dogSlot,
+          imageUri, // Pass imageUri if provided (from cropper)
+          croppedUri, // Pass croppedUri if provided (already cropped)
         });
 
         if (!result.success || !result.photo) {
@@ -246,11 +250,11 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           );
         }
 
-        if (bucketType === 'dog' && dogId) {
+        if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
-            [dogId]: {
-              ...prev[dogId],
+            [dogSlot]: {
+              ...prev[dogSlot],
               isUploading: false,
               uploadError: errorMessage,
             },

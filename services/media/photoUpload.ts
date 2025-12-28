@@ -23,6 +23,10 @@ export interface UploadPhotoWithValidationParams {
   // Deprecated: dogId kept for backwards compatibility, use dogSlot instead
   dogId?: string;
   // Note: Validation is now automatic via DB webhook - no manual trigger needed
+  // Optional: If imageUri is provided, skip image picker and use this URI directly
+  imageUri?: string;
+  // Optional: If croppedUri is provided, use this already-cropped image for upload
+  croppedUri?: string;
 }
 
 export interface UploadPhotoResult {
@@ -35,7 +39,7 @@ export interface UploadPhotoResult {
  * Uploads a photo with async AI moderation
  * 
  * Steps:
- * 1. Pick image from device
+ * 1. Pick image from device (or use provided imageUri)
  * 2. Resize and compress image
  * 3. Upload to Supabase Storage
  * 4. Create photo record with status 'pending'
@@ -44,18 +48,27 @@ export interface UploadPhotoResult {
 export async function uploadPhotoWithValidation(
   params: UploadPhotoWithValidationParams
 ): Promise<UploadPhotoResult> {
-  const { bucketType, dogSlot, dogId } = params;
+  const { bucketType, dogSlot, dogId, imageUri, croppedUri } = params;
 
   try {
-    // Step 1: Pick image from device
-    const pickedImage = await pickImage({
-      allowsEditing: false,
-      quality: 0.8,
-    });
+    let pickedImage: { uri: string; type?: string } | null = null;
 
-    if (!pickedImage) {
-      // User cancelled
-      return { success: false };
+    // Step 1: Pick image from device or use provided URI
+    if (imageUri) {
+      // Use provided image URI (e.g., from cropper)
+      pickedImage = { uri: imageUri };
+    } else {
+      // Pick image from device
+      const picked = await pickImage({
+        allowsEditing: false,
+        quality: 0.8,
+      });
+
+      if (!picked) {
+        // User cancelled
+        return { success: false };
+      }
+      pickedImage = picked;
     }
 
     // Step 2: Get current user ID
@@ -65,10 +78,11 @@ export async function uploadPhotoWithValidation(
     // resizeAndUploadPhoto already creates the DB record, so we don't need createPhotoRecord
     const uploadResult = await resizeAndUploadPhoto({
       localUri: pickedImage.uri,
+      croppedUri, // Use cropped image if provided
       userId,
       bucketType,
       dogSlot,
-      mimeType: pickedImage.type,
+      mimeType: pickedImage.type || 'image/jpeg',
     });
 
     // Step 4: Fetch the newly created photo record

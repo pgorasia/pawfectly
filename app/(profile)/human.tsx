@@ -18,7 +18,6 @@ const GENDERS: { label: string; value: Gender }[] = [
   { label: 'Female', value: 'female' },
   { label: 'Trans', value: 'trans' },
   { label: 'Non-binary', value: 'non-binary' },
-  { label: 'Self-described', value: 'self-described' },
   { label: 'Prefer not to say', value: 'prefer-not-to-say' },
 ];
 
