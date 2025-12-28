@@ -90,6 +90,9 @@ function getRejectionMessage(reason: string | null | undefined): string {
   if (reason === 'contains_contact_info' || reason.includes('contact') || reason.includes('phone') || reason.includes('email') || reason.includes('Instagram')) {
     return 'Contact information detected. Please upload a photo without contact info.';
   }
+  if (reason === 'is_screenshot' || reason.includes('screenshot') || reason.includes('UI capture') || reason.includes('screen capture')) {
+    return 'Screenshots are not allowed. Please upload an actual photo.';
+  }
   
   return 'Your photo was rejected. Please upload a new one.';
 }

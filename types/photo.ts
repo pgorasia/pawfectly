@@ -23,6 +23,7 @@ export interface Photo {
   contains_human: boolean;
   // contains_both is computed as: contains_dog && contains_human
   rejection_reason?: string | null;
+  display_order?: number | null; // Order in which photos are displayed in the bucket
 }
 
 export interface PhotoUploadResult {

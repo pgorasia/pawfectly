@@ -104,17 +104,29 @@ serve(async (req) => {
     }
 
     // 5. OpenAI Vision check (only called if moderation didn't flag)
-    // Vision API checks for NSFW as fallback + content analysis (hasHuman, hasDog, hasText)
+    // Vision API checks for NSFW as fallback + content analysis (hasHuman, hasDog, hasText, isScreenshot)
     const visionPrompt = `Analyze this photo for a pet social app. Return ONLY JSON:
-{ "hasHuman": boolean, "hasDog": boolean, "hasText": boolean, "isNSFW": boolean }.
+{ "hasHuman": boolean, "hasDog": boolean, "hasText": boolean, "isNSFW": boolean, "isScreenshot": boolean }.
 
 Rules:
 - hasHuman: true if there is a human person visible
 - hasDog: true if there is a dog visible
-- hasText: true if there is any phone number, @handle, Instagram/Snap/WhatsApp, or readable contact text
+- hasText: true if there is ANY contact information visible, including:
+  * Phone numbers (any format: (555) 123-4567, 555-123-4567, +1 555 123 4567, etc.)
+  * Email addresses (any format: user@example.com, etc.)
+  * Social media handles (@username, Instagram handles, Snapchat usernames, TikTok handles)
+  * QR codes (any QR code visible in the image)
+  * Watermarked usernames (any text watermark with contact info)
+  * Any readable text that appears to be contact information
 - isNSFW: true if the image contains nudity, explicit sexual content, violence, or any inappropriate/adult content unsuitable for a family-friendly pet app
+- isScreenshot: true if the image appears to be a screenshot or UI capture, including:
+  * Photos with app UI elements (navigation bars, buttons, menus, app interfaces)
+  * Chat screenshots (messaging app interfaces, conversation screens)
+  * Camera roll UI (photo gallery interfaces, file browser UI)
+  * Any device screen capture showing software interfaces or UI elements
 
-Be strict with NSFW detection: flag anything that would be inappropriate for children or violates content policies.`
+Be strict with NSFW detection: flag anything that would be inappropriate for children or violates content policies.
+Be strict with screenshot detection: flag any image that shows device UI, app interfaces, or screen captures.`
 
     const visionRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -151,7 +163,7 @@ Be strict with NSFW detection: flag anything that would be inappropriate for chi
       throw new Error('No content in vision response')
     }
 
-    let visionResult: { hasHuman: boolean; hasDog: boolean; hasText: boolean; isNSFW?: boolean }
+    let visionResult: { hasHuman: boolean; hasDog: boolean; hasText: boolean; isNSFW?: boolean; isScreenshot?: boolean }
     try {
       visionResult = JSON.parse(visionContent)
     } catch (e) {
@@ -159,8 +171,8 @@ Be strict with NSFW detection: flag anything that would be inappropriate for chi
       throw new Error('Failed to parse vision JSON response')
     }
 
-    const { hasHuman = false, hasDog = false, hasText = false, isNSFW = false } = visionResult
-    console.log(`[validate-photo] Photo ${id}: Vision result - hasHuman: ${hasHuman}, hasDog: ${hasDog}, hasText: ${hasText}, isNSFW: ${isNSFW}`)
+    const { hasHuman = false, hasDog = false, hasText = false, isNSFW = false, isScreenshot = false } = visionResult
+    console.log(`[validate-photo] Photo ${id}: Vision result - hasHuman: ${hasHuman}, hasDog: ${hasDog}, hasText: ${hasText}, isNSFW: ${isNSFW}, isScreenshot: ${isScreenshot}`)
 
     // 6. Apply approval rules
 
@@ -178,7 +190,21 @@ Be strict with NSFW detection: flag anything that would be inappropriate for chi
       )
     }
 
-    // Rule: If hasText=true, reject and delete
+    // Rule: Reject if screenshot/UI capture detected
+    if (isScreenshot) {
+      console.log(`[validate-photo] Photo ${id}: REJECTED - Screenshot or UI capture detected`)
+      await deletePhotoFromStorage(supabaseAdmin, storage_path)
+      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'is_screenshot')
+      return new Response(
+        JSON.stringify({ status: 'rejected', reason: 'is_screenshot' }), 
+        { 
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
+    // Rule: If hasText=true, reject and delete (contact info detection)
     if (hasText) {
       console.log(`[validate-photo] Photo ${id}: REJECTED - Contains contact info`)
       await deletePhotoFromStorage(supabaseAdmin, storage_path)

@@ -108,7 +108,8 @@ export async function getDogPhotos(
     .eq('user_id', userId)
     .eq('dog_slot', dogSlot)
     .eq('bucket_type', 'dog')
-    .order('created_at', { ascending: false });
+    .order('display_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: false }); // Fallback for photos without display_order
 
   if (error) {
     throw new Error(`Failed to fetch dog photos: ${error.message}`);
@@ -128,7 +129,8 @@ export async function getHumanPhotos(userId: string): Promise<Photo[]> {
     .eq('user_id', userId)
     .eq('bucket_type', 'human')
     .is('dog_slot', null)
-    .order('created_at', { ascending: false });
+    .order('display_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: false }); // Fallback for photos without display_order
 
   if (error) {
     throw new Error(`Failed to fetch human photos: ${error.message}`);
@@ -328,5 +330,111 @@ export async function triggerServerValidation(photoId: string): Promise<void> {
   console.warn(`[PhotoService] triggerServerValidation is deprecated. Validation is now automatic via webhook for photo ${photoId}`);
   // No-op: validation happens automatically via DB webhook
   return Promise.resolve();
+}
+
+/**
+ * Update display_order for multiple photos
+ */
+export async function updatePhotoDisplayOrder(
+  photoOrders: Array<{ photoId: string; displayOrder: number }>
+): Promise<void> {
+  if (photoOrders.length === 0) return;
+
+  // Update each photo's display_order
+  const updates = photoOrders.map(({ photoId, displayOrder }) =>
+    supabase
+      .from('photos')
+      .update({ display_order: displayOrder })
+      .eq('id', photoId)
+  );
+
+  const results = await Promise.all(updates);
+  
+  const errors = results.filter(r => r.error);
+  if (errors.length > 0) {
+    throw new Error(`Failed to update photo display order: ${errors[0].error?.message}`);
+  }
+}
+
+/**
+ * Gets the next display_order value for a new photo in a bucket
+ */
+export async function getNextDisplayOrder(
+  userId: string,
+  bucketType: BucketType,
+  dogSlot?: number
+): Promise<number> {
+  let query = supabase
+    .from('photos')
+    .select('display_order')
+    .eq('user_id', userId)
+    .eq('bucket_type', bucketType);
+
+  if (bucketType === 'dog' && dogSlot) {
+    query = query.eq('dog_slot', dogSlot);
+  } else {
+    query = query.is('dog_slot', null);
+  }
+
+  const { data, error } = await query
+    .order('display_order', { ascending: false, nullsFirst: false })
+    .limit(1);
+
+  if (error) {
+    throw new Error(`Failed to get next display order: ${error.message}`);
+  }
+
+  if (!data || data.length === 0 || !data[0].display_order) {
+    return 1;
+  }
+
+  return data[0].display_order + 1;
+}
+
+/**
+ * Reorder photos after deletion - moves all photos after deleted one up by 1
+ */
+export async function reorderPhotosAfterDeletion(
+  userId: string,
+  bucketType: BucketType,
+  deletedDisplayOrder: number,
+  dogSlot?: number
+): Promise<void> {
+  let query = supabase
+    .from('photos')
+    .select('id, display_order')
+    .eq('user_id', userId)
+    .eq('bucket_type', bucketType)
+    .gt('display_order', deletedDisplayOrder);
+
+  if (bucketType === 'dog' && dogSlot) {
+    query = query.eq('dog_slot', dogSlot);
+  } else {
+    query = query.is('dog_slot', null);
+  }
+
+  const { data: photosToUpdate, error } = await query;
+
+  if (error) {
+    throw new Error(`Failed to fetch photos for reordering: ${error.message}`);
+  }
+
+  if (!photosToUpdate || photosToUpdate.length === 0) {
+    return; // No photos to reorder
+  }
+
+  // Update each photo's display_order (decrement by 1)
+  const updates = photosToUpdate.map((photo) =>
+    supabase
+      .from('photos')
+      .update({ display_order: (photo.display_order || 0) - 1 })
+      .eq('id', photo.id)
+  );
+
+  const results = await Promise.all(updates);
+  const errors = results.filter(r => r.error);
+  if (errors.length > 0) {
+    throw new Error(`Failed to reorder photos after deletion: ${errors[0].error?.message}`);
+  }
 }
 

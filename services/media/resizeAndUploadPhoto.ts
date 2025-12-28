@@ -36,8 +36,38 @@ export interface ResizeAndUploadPhotoResult {
 }
 
 const MAX_LONG_EDGE = 512;
-const JPEG_QUALITY = 0.82;
+const JPEG_QUALITY = 0.82; // Fallback quality (not used with adaptive compression)
 const BUCKET_NAME = 'photos';
+
+/**
+ * Calculates adaptive JPEG quality based on cropped image pixel count
+ * 
+ * Quality curve:
+ * - ≤ 1,458,000 pixels (1080×1350): 0.95 (maximum quality)
+ * - ≥ 3,000,000 pixels: 0.82 (standard compression)
+ * - Between: Linear interpolation
+ */
+function getJpegQualityAfterCrop(width: number, height: number): number {
+  const pixels = width * height;
+
+  const MIN_PIXELS = 1_458_000; // 1080 × 1350
+  const MAX_PIXELS = 3_000_000;
+
+  const MAX_QUALITY = 0.95;
+  const MIN_QUALITY = 0.82;
+
+  if (pixels <= MIN_PIXELS) {
+    return MAX_QUALITY;
+  }
+
+  if (pixels >= MAX_PIXELS) {
+    return MIN_QUALITY;
+  }
+
+  const t = (pixels - MIN_PIXELS) / (MAX_PIXELS - MIN_PIXELS);
+
+  return MAX_QUALITY - t * (MAX_QUALITY - MIN_QUALITY);
+}
 
 /**
  * Validates that the file is an image based on MIME type
@@ -130,12 +160,13 @@ function generateStoragePath(
  * 
  * Steps:
  * 1. Validate MIME type is image/*
- * 2. Get original dimensions
- * 3. Resize to longest side 512px (maintain aspect ratio)
- * 4. Compress to JPEG quality 0.82
- * 5. Convert to blob
- * 6. Upload to Supabase Storage
- * 7. Insert row into photos table with status='pending'
+ * 2. Get cropped image dimensions (or original if not cropped)
+ * 3. Calculate adaptive JPEG quality based on cropped image pixel count
+ * 4. Resize to longest side 512px (maintain aspect ratio)
+ * 5. Compress with adaptive JPEG quality (0.95 for small images, 0.82 for large)
+ * 6. Convert to blob
+ * 7. Upload to Supabase Storage
+ * 8. Insert row into photos table with status='pending'
  */
 export async function resizeAndUploadPhoto(
   params: ResizeAndUploadPhotoParams
@@ -152,6 +183,7 @@ export async function resizeAndUploadPhoto(
     const sourceUri = croppedUri || localUri;
 
     // Step 2: Get image dimensions (no manipulation, just read metadata)
+    // Note: If croppedUri is provided, these are the cropped image dimensions
     const originalInfo = await manipulateAsync(sourceUri, [], {
       format: undefined,
     });
@@ -160,7 +192,11 @@ export async function resizeAndUploadPhoto(
     const originalHeight = originalInfo.height;
     const originalLongEdge = Math.max(originalWidth, originalHeight);
 
-    // Step 3: Calculate resize dimensions (maintain aspect ratio)
+    // Step 3: Calculate adaptive JPEG quality based on cropped image pixel count
+    // Use the cropped image dimensions (originalWidth × originalHeight) to determine quality
+    const adaptiveQuality = getJpegQualityAfterCrop(originalWidth, originalHeight);
+
+    // Step 4: Calculate resize dimensions (maintain aspect ratio)
     let finalWidth = originalWidth;
     let finalHeight = originalHeight;
     const actions: Action[] = [];
@@ -179,9 +215,9 @@ export async function resizeAndUploadPhoto(
       });
     }
 
-    // Step 4: Resize and compress to JPEG quality 0.82
+    // Step 5: Resize and compress with adaptive JPEG quality
     const manipulatedResult = await manipulateAsync(sourceUri, actions, {
-      compress: JPEG_QUALITY,
+      compress: adaptiveQuality,
       format: SaveFormat.JPEG,
     });
 

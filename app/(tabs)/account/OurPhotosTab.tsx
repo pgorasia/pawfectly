@@ -5,6 +5,7 @@
 
 import React, { useMemo } from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { DogPhotoBucket } from '@/components/dog/DogPhotoBucket';
@@ -38,7 +39,30 @@ export default function OurPhotosTab() {
     removePhoto,
     replacePhoto,
     hasHumanDogPhoto,
+    reorderPhotos,
+    savePendingReordersIfNeeded,
   } = usePhotoBuckets(dogSlots);
+
+  // Save pending reorders when user leaves this tab
+  useFocusEffect(
+    React.useCallback(() => {
+      return () => {
+        // On blur (user leaving tab) - save pending reorders
+        savePendingReordersIfNeeded().catch((err: unknown) => {
+          console.warn('[OurPhotosTab] Failed to save pending reorders on tab switch:', err);
+        });
+      };
+    }, [savePendingReordersIfNeeded])
+  );
+
+  // Also save on component unmount (when switching to different tab in Account section)
+  React.useEffect(() => {
+    return () => {
+      savePendingReordersIfNeeded().catch((err: unknown) => {
+        console.warn('[OurPhotosTab] Failed to save pending reorders on unmount:', err);
+      });
+    };
+  }, [savePendingReordersIfNeeded]);
 
   // Store pending upload info for after cropper confirms
   const pendingUploadRef = React.useRef<{
@@ -163,6 +187,7 @@ export default function OurPhotosTab() {
             onUpload={() => handleUploadWithCropper('dog', dog.slot)}
             onRemove={(photoId) => removePhoto(photoId, 'dog', dog.slot)}
             onReplace={(photoId) => handleReplaceWithCropper(photoId, 'dog', dog.slot)}
+            onReorder={(photoIds) => reorderPhotos(photoIds, 'dog', dog.slot)}
           />
         );
       })}
@@ -174,6 +199,7 @@ export default function OurPhotosTab() {
         onRemove={(photoId) => removePhoto(photoId, 'human')}
         onReplace={(photoId) => handleReplaceWithCropper(photoId, 'human')}
         hasHumanDogPhoto={hasHumanDogPhoto}
+        onReorder={(photoIds) => reorderPhotos(photoIds, 'human')}
       />
 
       {/* Cropper Modal */}

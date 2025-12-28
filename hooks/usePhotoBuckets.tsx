@@ -5,10 +5,12 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  getUserPhotos,
   getDogPhotos,
   getHumanPhotos,
   deletePhoto,
+  updatePhotoDisplayOrder,
+  getNextDisplayOrder,
+  reorderPhotosAfterDeletion,
 } from '@/services/supabase/photoService';
 import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
 import { pickImage } from '@/services/media/imagePicker';
@@ -37,6 +39,8 @@ export interface UsePhotoBucketsReturn {
   replacePhoto: (photoId: string, bucketType: BucketType, dogSlot?: number) => Promise<void>;
   hasHumanDogPhoto: boolean;
   refreshPhotos: () => Promise<void>;
+  reorderPhotos: (photoIds: string[], bucketType: BucketType, dogSlot?: number) => void;
+  savePendingReordersIfNeeded: () => Promise<void>;
 }
 
 /**
@@ -52,6 +56,9 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     uploadError: null,
   });
   const [hasHumanDogPhoto, setHasHumanDogPhoto] = useState(false);
+  
+  // Track pending reorder operations (photoIds that need display_order updated)
+  const pendingReordersRef = useRef<Map<string, { photoIds: string[]; bucketType: BucketType; dogSlot?: number }>>(new Map());
 
   // Initialize dog buckets
   useEffect(() => {
@@ -204,12 +211,25 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           return;
         }
 
-        // Upload successful - update state with new photo
+        // Set display_order to the end (get next display_order)
+        let nextDisplayOrder: number | null = null;
+        if (user?.id) {
+          nextDisplayOrder = await getNextDisplayOrder(user.id, bucketType, dogSlot);
+          await supabase
+            .from('photos')
+            .update({ display_order: nextDisplayOrder })
+            .eq('id', result.photo!.id);
+        }
+
+        // Update photo object with display_order
+        const photoWithOrder = { ...result.photo!, display_order: nextDisplayOrder };
+
+        // Upload successful - update state with new photo (at the end)
         if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
             [dogSlot]: {
-              photos: [...prev[dogSlot].photos, result.photo!],
+              photos: [...prev[dogSlot].photos, photoWithOrder],
               isUploading: false,
               uploadError: null,
             },
@@ -217,7 +237,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         } else {
           setHumanBucket((prev) => ({
             ...prev,
-            photos: [...prev.photos, result.photo!],
+            photos: [...prev.photos, photoWithOrder],
             isUploading: false,
             uploadError: null,
           }));
@@ -276,7 +296,22 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
       try {
         if (!user?.id) return;
 
+        // Get the photo's display_order before deleting
+        let deletedDisplayOrder: number | null = null;
+        if (bucketType === 'dog' && dogSlot) {
+          const photo = dogBuckets[dogSlot]?.photos.find(p => p.id === photoId);
+          deletedDisplayOrder = photo?.display_order ?? null;
+        } else {
+          const photo = humanBucket.photos.find(p => p.id === photoId);
+          deletedDisplayOrder = photo?.display_order ?? null;
+        }
+
         await deletePhoto(photoId, user.id);
+
+        // Reorder remaining photos (move all following photos up by 1)
+        if (deletedDisplayOrder !== null) {
+          await reorderPhotosAfterDeletion(user.id, bucketType, deletedDisplayOrder, dogSlot);
+        }
 
         // Update state
         if (bucketType === 'dog' && dogSlot) {
@@ -294,13 +329,13 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           }));
         }
 
-        // Refresh to check human+dog status
+        // Refresh to check human+dog status and get updated display_order
         await refreshPhotos();
       } catch (error) {
         console.error('Failed to remove photo:', error);
       }
     },
-    [refreshPhotos, user]
+    [refreshPhotos, user, dogBuckets, humanBucket]
   );
 
   const replacePhoto = useCallback(
@@ -337,10 +372,20 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           }));
         }
 
-        // Step 3: Delete the old photo
+        // Step 3: Get the old photo's display_order to preserve it
+        let preservedDisplayOrder: number | null = null;
+        if (bucketType === 'dog' && dogSlot) {
+          const oldPhoto = dogBuckets[dogSlot]?.photos.find(p => p.id === photoId);
+          preservedDisplayOrder = oldPhoto?.display_order ?? null;
+        } else {
+          const oldPhoto = humanBucket.photos.find(p => p.id === photoId);
+          preservedDisplayOrder = oldPhoto?.display_order ?? null;
+        }
+
+        // Step 4: Delete the old photo
         await deletePhoto(photoId, user.id);
 
-        // Step 4: Update state to remove old photo
+        // Step 5: Update state to remove old photo
         if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
@@ -356,7 +401,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           }));
         }
 
-        // Step 5: Upload the new photo
+        // Step 6: Upload the new photo
         const userId = await getCurrentUserId();
         const uploadResult = await resizeAndUploadPhoto({
           localUri: pickedImage.uri,
@@ -366,7 +411,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           mimeType: pickedImage.type,
         });
 
-        // Step 6: Fetch the newly created photo record
+        // Step 7: Fetch the newly created photo record
         const { data: photo, error: fetchError } = await supabase
           .from('photos')
           .select('*')
@@ -377,23 +422,49 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           throw new Error(`Failed to fetch newly created photo record: ${fetchError?.message}`);
         }
 
-        // Step 7: Update state with new photo
+        // Step 8: Preserve the display_order from the old photo
+        if (preservedDisplayOrder !== null) {
+          await supabase
+            .from('photos')
+            .update({ display_order: preservedDisplayOrder })
+            .eq('id', photo.id);
+        }
+
+        const photoWithOrder = { ...photo, display_order: preservedDisplayOrder };
+
+        // Step 9: Update state with new photo (in the same position)
         if (bucketType === 'dog' && dogSlot) {
-          setDogBuckets((prev) => ({
-            ...prev,
-            [dogSlot]: {
-              photos: [...prev[dogSlot].photos, photo],
+          setDogBuckets((prev) => {
+            const currentPhotos = prev[dogSlot]?.photos || [];
+            // Insert at the same position based on display_order
+            const sortedPhotos = [...currentPhotos, photoWithOrder].sort((a, b) => {
+              const orderA = a.display_order ?? 0;
+              const orderB = b.display_order ?? 0;
+              return orderA - orderB;
+            });
+            return {
+              ...prev,
+              [dogSlot]: {
+                photos: sortedPhotos,
+                isUploading: false,
+                uploadError: null,
+              },
+            };
+          });
+        } else {
+          setHumanBucket((prev) => {
+            const sortedPhotos = [...prev.photos, photoWithOrder].sort((a, b) => {
+              const orderA = a.display_order ?? 0;
+              const orderB = b.display_order ?? 0;
+              return orderA - orderB;
+            });
+            return {
+              ...prev,
+              photos: sortedPhotos,
               isUploading: false,
               uploadError: null,
-            },
-          }));
-        } else {
-          setHumanBucket((prev) => ({
-            ...prev,
-            photos: [...prev.photos, photo],
-            isUploading: false,
-            uploadError: null,
-          }));
+            };
+          });
         }
 
         // Update human+dog flag if needed
@@ -429,6 +500,104 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     [user]
   );
 
+  // Reorder photos - saves to database on tab switch
+  const reorderPhotos = useCallback(
+    (photoIds: string[], bucketType: BucketType, dogSlot?: number) => {
+      if (!user?.id) return;
+
+      // Create a unique key for this bucket
+      const bucketKey = bucketType === 'dog' && dogSlot 
+        ? `dog_${dogSlot}` 
+        : 'human';
+
+      // Store pending reorder (will be saved on tab switch)
+      pendingReordersRef.current.set(bucketKey, { photoIds, bucketType, dogSlot });
+
+      // Update local state immediately for responsive UI
+      if (bucketType === 'dog' && dogSlot) {
+        setDogBuckets((prev) => {
+          const currentPhotos = prev[dogSlot]?.photos || [];
+          const photoMap = new Map(currentPhotos.map(p => [p.id, p]));
+          const reorderedPhotos = photoIds
+            .map(id => photoMap.get(id))
+            .filter((p): p is Photo => p !== undefined);
+          
+          // Add any photos not in the reorder list at the end
+          const remainingPhotos = currentPhotos.filter(p => !photoIds.includes(p.id));
+          
+          return {
+            ...prev,
+            [dogSlot]: {
+              ...prev[dogSlot],
+              photos: [...reorderedPhotos, ...remainingPhotos],
+            },
+          };
+        });
+      } else {
+        setHumanBucket((prev) => {
+          const photoMap = new Map(prev.photos.map(p => [p.id, p]));
+          const reorderedPhotos = photoIds
+            .map(id => photoMap.get(id))
+            .filter((p): p is Photo => p !== undefined);
+          
+          // Add any photos not in the reorder list at the end
+          const remainingPhotos = prev.photos.filter(p => !photoIds.includes(p.id));
+          
+          return {
+            ...prev,
+            photos: [...reorderedPhotos, ...remainingPhotos],
+          };
+        });
+      }
+
+      console.log(`[usePhotoBuckets] Photo order updated locally, will save on tab switch`);
+    },
+    [user]
+  );
+
+  // Save pending reorders to database
+  const savePendingReorders = useCallback(async () => {
+    if (!user?.id || pendingReordersRef.current.size === 0) {
+      return;
+    }
+
+    try {
+      console.log('[usePhotoBuckets] Saving pending reorders to database', {
+        pendingCount: pendingReordersRef.current.size,
+      });
+      
+      // Collect all photo orders from pending reorders
+      const allPhotoOrders: Array<{ photoId: string; displayOrder: number }> = [];
+      
+      for (const [key, { photoIds }] of pendingReordersRef.current.entries()) {
+        photoIds.forEach((photoId, index) => {
+          allPhotoOrders.push({
+            photoId,
+            displayOrder: index + 1,
+          });
+        });
+      }
+
+      if (allPhotoOrders.length > 0) {
+        await updatePhotoDisplayOrder(allPhotoOrders);
+        console.log(`[usePhotoBuckets] ✅ Saved ${allPhotoOrders.length} photo order(s) to database`);
+        
+        // Clear pending reorders after successful save
+        pendingReordersRef.current.clear();
+      }
+    } catch (error) {
+      console.error('[usePhotoBuckets] Failed to save pending reorders:', error);
+      throw error;
+    }
+  }, [user?.id]);
+
+  // Expose function to save pending reorders (called on tab switch)
+  const savePendingReordersIfNeeded = useCallback(async () => {
+    if (pendingReordersRef.current.size > 0) {
+      await savePendingReorders();
+    }
+  }, [savePendingReorders]);
+
   return {
     dogBuckets,
     humanBucket,
@@ -437,6 +606,8 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     replacePhoto,
     hasHumanDogPhoto,
     refreshPhotos,
+    reorderPhotos,
+    savePendingReordersIfNeeded,
   };
 }
 

@@ -5,7 +5,7 @@
 
 import React, { useMemo } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
@@ -57,7 +57,21 @@ export default function PhotosScreen() {
     removePhoto,
     replacePhoto,
     hasHumanDogPhoto,
+    reorderPhotos,
+    savePendingReordersIfNeeded,
   } = usePhotoBuckets(dogSlots);
+
+  // Save pending reorders when user leaves this screen
+  useFocusEffect(
+    React.useCallback(() => {
+      return () => {
+        // On blur (user leaving screen) - save pending reorders
+        savePendingReordersIfNeeded().catch((err: unknown) => {
+          console.warn('[PhotosScreen] Failed to save pending reorders on screen switch:', err);
+        });
+      };
+    }, [savePendingReordersIfNeeded])
+  );
 
   // Store pending upload info for after cropper confirms
   const pendingUploadRef = React.useRef<{
@@ -223,6 +237,7 @@ export default function PhotosScreen() {
               onUpload={() => handleUploadWithCropper('dog', dog.slot)}
               onRemove={(photoId) => removePhoto(photoId, 'dog', dog.slot)}
               onReplace={(photoId) => handleReplaceWithCropper(photoId, 'dog', dog.slot)}
+              onReorder={(photoIds) => reorderPhotos(photoIds, 'dog', dog.slot)}
             />
           );
         })}
@@ -234,6 +249,7 @@ export default function PhotosScreen() {
           onRemove={(photoId) => removePhoto(photoId, 'human')}
           onReplace={(photoId) => handleReplaceWithCropper(photoId, 'human')}
           hasHumanDogPhoto={hasHumanDogPhoto}
+          onReorder={(photoIds) => reorderPhotos(photoIds, 'human')}
         />
 
         {/* Cropper Modal */}

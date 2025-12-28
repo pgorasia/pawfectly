@@ -3,8 +3,8 @@
  * Displays photo grid for human photos with upload functionality
  */
 
-import React, { useMemo } from 'react';
-import { View, StyleSheet, TouchableOpacity, Image, ActivityIndicator } from 'react-native';
+import React, { useMemo, useState, useCallback } from 'react';
+import { View, StyleSheet, TouchableOpacity, Image, ActivityIndicator, Dimensions } from 'react-native';
 import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
 import { Colors } from '@/constants/colors';
@@ -12,6 +12,7 @@ import { Spacing } from '@/constants/spacing';
 import type { Photo } from '@/types/photo';
 import type { PhotoBucketState } from '@/hooks/usePhotoBuckets';
 import { supabase } from '@/services/supabase/supabaseClient';
+import { DraggablePhotoItem } from '@/components/media/DraggablePhotoItem';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 interface HumanPhotoBucketProps {
@@ -20,6 +21,7 @@ interface HumanPhotoBucketProps {
   onRemove: (photoId: string) => Promise<void>;
   hasHumanDogPhoto: boolean;
   onReplace?: (photoId: string) => Promise<void>;
+  onReorder?: (photoIds: string[]) => Promise<void>;
 }
 
 export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
@@ -28,8 +30,10 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
   onRemove,
   hasHumanDogPhoto,
   onReplace,
+  onReorder,
 }) => {
   const { photos, isUploading, uploadError } = bucket;
+  const [containerWidth, setContainerWidth] = useState(Dimensions.get('window').width);
 
   const handleRemove = (photoId: string, e: any) => {
     e.stopPropagation();
@@ -43,6 +47,20 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
       onUpload();
     }
   };
+
+  const handleDragEnd = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      if (!onReorder) return;
+      
+      const newOrder = [...photos];
+      const [movedPhoto] = newOrder.splice(fromIndex, 1);
+      newOrder.splice(toIndex, 0, movedPhoto);
+      
+      const photoIds = newOrder.map(p => p.id);
+      onReorder(photoIds);
+    },
+    [photos, onReorder]
+  );
 
   const getRejectionMessage = (reason: string | null | undefined): string => {
     if (!reason) return 'Rejected';
@@ -59,6 +77,9 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
     }
     if (reason === 'contains_contact_info' || reason.includes('contact') || reason.includes('phone') || reason.includes('email') || reason.includes('Instagram')) {
       return 'Info not allowed';
+    }
+    if (reason === 'is_screenshot' || reason.includes('screenshot') || reason.includes('UI capture') || reason.includes('screen capture')) {
+      return 'Screenshot not allowed';
     }
     
     return 'Rejected';
@@ -107,47 +128,72 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
         </View>
       )}
 
-      <View style={styles.photoGrid}>
-        {photos.map((photo) => {
+      <View
+        style={styles.photoGrid}
+        onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
+      >
+        {photos.map((photo, index) => {
           const imageUrl = photoUrls.get(photo.id) ?? null;
           const isRejected = photo.status === 'rejected';
           return (
-            <View key={photo.id} style={styles.photoTileContainer}>
-              <View
-                style={[
-                  styles.photoTile,
-                  isRejected && styles.photoTileRejected,
-                ]}
-              >
-                {imageUrl ? (
-                  <TouchableOpacity
-                    onPress={() => handlePhotoPress(photo.id)}
-                    activeOpacity={0.9}
-                    style={styles.photoTouchable}
+            <React.Fragment key={photo.id}>
+              {onReorder ? (
+                <DraggablePhotoItem
+                  photo={photo}
+                  index={index}
+                  imageUrl={imageUrl}
+                  isRejected={isRejected}
+                  onPress={() => handlePhotoPress(photo.id)}
+                  onRemove={() => onRemove(photo.id)}
+                  onDragEnd={handleDragEnd}
+                  containerWidth={containerWidth}
+                />
+              ) : (
+                <View style={styles.photoTileContainer}>
+                  <View
+                    style={[
+                      styles.photoTile,
+                      isRejected && styles.photoTileRejected,
+                    ]}
                   >
-                    <Image source={{ uri: imageUrl }} style={styles.photo} />
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.photoPlaceholder}>
-                    <AppText variant="caption">Loading...</AppText>
+                    {imageUrl ? (
+                      <TouchableOpacity
+                        onPress={() => handlePhotoPress(photo.id)}
+                        activeOpacity={0.9}
+                        style={styles.photoTouchable}
+                      >
+                        <Image source={{ uri: imageUrl }} style={styles.photo} />
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={styles.photoPlaceholder}>
+                        <AppText variant="caption">Loading...</AppText>
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      style={styles.removeButton}
+                      onPress={(e) => handleRemove(photo.id, e)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Ionicons name="trash" size={18} color={Colors.background} />
+                    </TouchableOpacity>
                   </View>
-                )}
-                <TouchableOpacity
-                  style={styles.removeButton}
-                  onPress={(e) => handleRemove(photo.id, e)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <Ionicons name="trash" size={18} color={Colors.background} />
-                </TouchableOpacity>
-              </View>
-              {isRejected && (
+                  {isRejected && (
+                    <View style={styles.rejectionReasonContainer}>
+                      <AppText variant="caption" style={styles.rejectionReasonText}>
+                        {getRejectionMessage(photo.rejection_reason)}
+                      </AppText>
+                    </View>
+                  )}
+                </View>
+              )}
+              {isRejected && onReorder && (
                 <View style={styles.rejectionReasonContainer}>
                   <AppText variant="caption" style={styles.rejectionReasonText}>
                     {getRejectionMessage(photo.rejection_reason)}
                   </AppText>
                 </View>
               )}
-            </View>
+            </React.Fragment>
           );
         })}
 
