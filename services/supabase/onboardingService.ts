@@ -7,13 +7,13 @@ import type { DogProfile, HumanProfile, Location, Preferences, ConnectionStyle }
 
 export type OnboardingStep = 'pack' | 'human' | 'photos' | 'preferences' | 'done';
 
-export interface OnboardingState {
+export interface OnboardingStatus {
   user_id: string;
   last_step: OnboardingStep;
-  dog_completed: boolean;
-  human_completed: boolean;
-  photos_completed: boolean;
-  preferences_completed: boolean;
+  dog_submitted: boolean;
+  human_submitted: boolean;
+  photos_submitted: boolean;
+  preferences_submitted: boolean;
   updated_at: string;
 }
 
@@ -22,14 +22,14 @@ export interface OnboardingState {
  */
 export async function initializeOnboardingState(userId: string): Promise<void> {
   const { error } = await supabase
-    .from('onboarding_state')
+    .from('onboarding_status')
     .insert({
       user_id: userId,
       last_step: 'pack',
-      dog_completed: false,
-      human_completed: false,
-      photos_completed: false,
-      preferences_completed: false,
+      dog_submitted: false,
+      human_submitted: false,
+      photos_submitted: false,
+      preferences_submitted: false,
     });
 
   if (error) {
@@ -41,9 +41,9 @@ export async function initializeOnboardingState(userId: string): Promise<void> {
 /**
  * Get onboarding state for a user
  */
-export async function getOnboardingState(userId: string): Promise<OnboardingState | null> {
+export async function getOnboardingState(userId: string): Promise<OnboardingStatus | null> {
   const { data, error } = await supabase
-    .from('onboarding_state')
+    .from('onboarding_status')
     .select('*')
     .eq('user_id', userId)
     .single();
@@ -65,10 +65,10 @@ export async function getOnboardingState(userId: string): Promise<OnboardingStat
  */
 export async function updateOnboardingState(
   userId: string,
-  updates: Partial<Omit<OnboardingState, 'user_id' | 'updated_at'>>
+  updates: Partial<Omit<OnboardingStatus, 'user_id' | 'updated_at'>>
 ): Promise<void> {
   const { error } = await supabase
-    .from('onboarding_state')
+    .from('onboarding_status')
     .update(updates)
     .eq('user_id', userId);
 
@@ -109,7 +109,7 @@ export async function updateProfileData(
       .eq('user_id', userId)
       .single();
 
-    // Save profile data preserving existing status (or 'active' if new)
+    // Save profile data (lifecycle_status and validation_status are managed by statusRepository)
     const profileData: any = {
       user_id: userId,
       display_name: human.name || null,
@@ -118,7 +118,7 @@ export async function updateProfileData(
       city: location?.city || null,
       lat: location?.latitude || null,
       lng: location?.longitude || null,
-      status: existingProfile?.status || 'active', // Preserve existing status or default to 'active'
+      // Note: lifecycle_status and validation_status are managed by statusRepository, not here
     };
 
     const { error: profileError } = await supabase
@@ -245,10 +245,9 @@ export async function saveDogData(
       }
     }
 
-    // Update onboarding state - mark dog as completed
-    await updateOnboardingState(userId, {
-      dog_completed: true,
-    });
+    // Note: This is autosave/draft save, not submission
+    // Submission is handled by markSubmitted() in statusRepository
+    // We don't update submission flags here to avoid confusion
   } catch (error) {
     console.error('[OnboardingService] Error saving dog data:', error);
     throw error;
@@ -285,10 +284,9 @@ export async function saveHumanData(
       throw new Error(`Failed to save profile: ${profileError.message}`);
     }
 
-    // Update onboarding state - mark human as completed
-    await updateOnboardingState(userId, {
-      human_completed: true,
-    });
+    // Note: This is autosave/draft save, not submission
+    // Submission is handled by markSubmitted() in statusRepository
+    // We don't update submission flags here to avoid confusion
   } catch (error) {
     console.error('[OnboardingService] Error saving human data:', error);
     throw error;
@@ -369,11 +367,11 @@ export async function savePackData(
       }
     }
 
+    // Note: This is deprecated - use saveDogData and saveHumanData separately
     // Update onboarding state
     await updateOnboardingState(userId, {
       last_step: 'human',
-      dog_completed: true,
-      human_completed: true,
+      // Note: Submission flags should be set via markSubmitted() in statusRepository
     });
   } catch (error) {
     console.error('[OnboardingService] Error saving pack data:', error);
@@ -479,10 +477,12 @@ export async function savePreferencesData(
       throw new Error(`Failed to save preferences: ${error.message}`);
     }
 
-    // Update onboarding state - mark preferences as completed and set to done
+    // Note: This is autosave/draft save, not submission
+    // Submission is handled by markSubmitted() in statusRepository
+    // Update onboarding state - set last_step but don't mark as submitted here
     await updateOnboardingState(userId, {
       last_step: 'done',
-      preferences_completed: true,
+      // Note: preferences_submitted should be set via markSubmitted() in statusRepository
     });
   } catch (error) {
     console.error('[OnboardingService] Error saving preferences data:', error);
@@ -497,7 +497,7 @@ export async function loadUserData(userId: string): Promise<{
   profile: any;
   dogs: any[];
   preferences: any;
-  onboardingState: OnboardingState | null;
+  onboardingState: OnboardingStatus | null;
 }> {
   try {
     // Load profile

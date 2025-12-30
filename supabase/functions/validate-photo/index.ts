@@ -49,7 +49,7 @@ serve(async (req) => {
 
     if (!publicImageUrl) {
       console.error(`[validate-photo] Could not generate public URL for photo ${id}`)
-      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'failed_to_generate_url')
+      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'failed_to_generate_url', undefined, user_id)
       return new Response(
         JSON.stringify({ error: 'Could not generate public URL' }), 
         { 
@@ -84,7 +84,7 @@ serve(async (req) => {
         if (moderationFlagged) {
           console.log(`[validate-photo] Photo ${id}: REJECTED - NSFW or disallowed content detected by Moderation API`)
           await deletePhotoFromStorage(supabaseAdmin, storage_path)
-          await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'nsfw_or_disallowed')
+          await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'nsfw_or_disallowed', undefined, user_id)
           return new Response(
             JSON.stringify({ status: 'rejected', reason: 'nsfw_or_disallowed' }), 
             { 
@@ -180,7 +180,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
     if (isNSFW) {
       console.log(`[validate-photo] Photo ${id}: REJECTED - NSFW or disallowed content detected by Vision API`)
       await deletePhotoFromStorage(supabaseAdmin, storage_path)
-      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'nsfw_or_disallowed')
+      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'nsfw_or_disallowed', undefined, user_id)
       return new Response(
         JSON.stringify({ status: 'rejected', reason: 'nsfw_or_disallowed' }), 
         { 
@@ -194,7 +194,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
     if (isScreenshot) {
       console.log(`[validate-photo] Photo ${id}: REJECTED - Screenshot or UI capture detected`)
       await deletePhotoFromStorage(supabaseAdmin, storage_path)
-      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'is_screenshot')
+      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'is_screenshot', undefined, user_id)
       return new Response(
         JSON.stringify({ status: 'rejected', reason: 'is_screenshot' }), 
         { 
@@ -208,7 +208,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
     if (hasText) {
       console.log(`[validate-photo] Photo ${id}: REJECTED - Contains contact info`)
       await deletePhotoFromStorage(supabaseAdmin, storage_path)
-      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'contains_contact_info')
+      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'contains_contact_info', undefined, user_id)
       return new Response(
         JSON.stringify({ status: 'rejected', reason: 'contains_contact_info' }), 
         { 
@@ -222,7 +222,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
     if (effectiveTargetType === 'human') {
       if (hasHuman) {
         console.log(`[validate-photo] Photo ${id}: APPROVED - Human detected`)
-        await updatePhotoStatus(supabaseAdmin, id, 'approved', null, { hasHuman, hasDog, hasText })
+        await updatePhotoStatus(supabaseAdmin, id, 'approved', null, { hasHuman, hasDog, hasText }, user_id)
         return new Response(
           JSON.stringify({ status: 'approved' }), 
           { 
@@ -234,7 +234,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
         // Special case: We see a dog but no human
         console.log(`[validate-photo] Photo ${id}: REJECTED - Dog detected but no human (target: human)`)
         await deletePhotoFromStorage(supabaseAdmin, storage_path)
-        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'Dog detected but human is missing')
+        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'Dog detected but human is missing', undefined, user_id)
         return new Response(
           JSON.stringify({ status: 'rejected', reason: 'Dog detected but human is missing' }), 
           { 
@@ -245,7 +245,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
       } else {
         console.log(`[validate-photo] Photo ${id}: REJECTED - Missing human`)
         await deletePhotoFromStorage(supabaseAdmin, storage_path)
-        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'missing_human')
+        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'missing_human', undefined, user_id)
         return new Response(
           JSON.stringify({ status: 'rejected', reason: 'missing_human' }), 
           { 
@@ -260,7 +260,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
     if (effectiveTargetType === 'dog') {
       if (hasDog) {
         console.log(`[validate-photo] Photo ${id}: APPROVED - Dog detected`)
-        await updatePhotoStatus(supabaseAdmin, id, 'approved', null, { hasHuman, hasDog, hasText })
+        await updatePhotoStatus(supabaseAdmin, id, 'approved', null, { hasHuman, hasDog, hasText }, user_id)
         return new Response(
           JSON.stringify({ status: 'approved' }), 
           { 
@@ -272,7 +272,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
         // Special case: We see a human but no dog when looking for dog
         console.log(`[validate-photo] Photo ${id}: REJECTED - Human detected but no dog (target: dog)`)
         await deletePhotoFromStorage(supabaseAdmin, storage_path)
-        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'Human detected but dog is missing')
+        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'Human detected but dog is missing', undefined, user_id)
         return new Response(
           JSON.stringify({ status: 'rejected', reason: 'Human detected but dog is missing' }), 
           { 
@@ -283,7 +283,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
       } else {
         console.log(`[validate-photo] Photo ${id}: REJECTED - Missing dog`)
         await deletePhotoFromStorage(supabaseAdmin, storage_path)
-        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'missing_dog')
+        await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'missing_dog', undefined, user_id)
         return new Response(
           JSON.stringify({ status: 'rejected', reason: 'missing_dog' }), 
           { 
@@ -296,7 +296,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
 
     // Fallback: should not reach here
     console.error(`[validate-photo] Photo ${id}: Unknown bucket_type: ${bucket_type}`)
-    await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'unknown_bucket_type')
+    await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'unknown_bucket_type', undefined, user_id)
     return new Response(
       JSON.stringify({ error: 'Unknown bucket_type' }), 
       { 
@@ -326,7 +326,8 @@ async function updatePhotoStatus(
   photoId: string,
   status: 'approved' | 'rejected',
   rejectionReason: string | null,
-  metadata?: { hasHuman: boolean; hasDog: boolean; hasText: boolean }
+  metadata?: { hasHuman: boolean; hasDog: boolean; hasText: boolean },
+  userId?: string
 ) {
   // Build update data - ONLY include fields that exist in the schema
   const updateData: any = {
@@ -355,6 +356,12 @@ async function updatePhotoStatus(
   }
 
   console.log(`[validate-photo] Photo ${photoId}: Updated status to ${status}, reason: ${rejectionReason || 'none'}`)
+
+  // NOTE: This edge function validates individual photos only.
+  // Profile-level validation (lifecycle_status, validation_status) should be handled
+  // by a separate validation job that calls applyValidationResult() with the validation_run_id.
+  // DO NOT modify profile lifecycle_status or validation_status here.
+  // DO NOT modify onboarding_status at all.
 }
 
 /**

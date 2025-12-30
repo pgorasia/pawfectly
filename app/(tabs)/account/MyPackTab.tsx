@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
+import { AppButton } from '@/components/ui/AppButton';
 import { useProfileDraft, DogProfile, AgeGroup, DogSize, EnergyLevel, PlayStyle, Temperament } from '@/hooks/useProfileDraft';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
-import { deletePhotosByDogSlot } from '@/services/supabase/photoService';
-import { updateProfileData } from '@/services/supabase/onboardingService';
+import { deletePhotosByDogSlot, getDogPhotos } from '@/services/supabase/photoService';
+import { updateProfileData, saveDogData, saveHumanData } from '@/services/supabase/onboardingService';
 import { searchLocation } from '@/services/geocoding/locationService';
 
+// Import constants from dogs.tsx - we'll reuse them
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
   { label: 'Puppy (0-1 year)', value: 'puppy' },
   { label: 'Young (1-3 years)', value: 'young' },
@@ -91,7 +94,10 @@ const BREEDS = [
 
 const MAX_DOGS = 3;
 
-function DogForm({
+type EditMode = 'none' | 'dogs' | 'human';
+
+// DogForm component for edit mode (reused from onboarding)
+function DogFormEdit({
   dog,
   onUpdate,
   onRemove,
@@ -129,13 +135,13 @@ function DogForm({
   };
 
   return (
-    <Card style={styles.dogCard}>
-      <View style={styles.dogHeader}>
-        <AppText variant="heading" style={styles.dogTitle}>
+    <Card style={editStyles.dogCard}>
+      <View style={editStyles.dogHeader}>
+        <AppText variant="heading" style={editStyles.dogTitle}>
           {dog.name || 'New Dog'}
         </AppText>
         {canRemove && (
-          <TouchableOpacity onPress={onRemove} style={styles.removeButton}>
+          <TouchableOpacity onPress={onRemove} style={editStyles.removeButton}>
             <AppText variant="caption" color={Colors.accent}>
               Remove
             </AppText>
@@ -143,29 +149,29 @@ function DogForm({
         )}
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Name *
         </AppText>
         <TextInput
-          style={styles.input}
+          style={editStyles.input}
           value={dog.name}
           onChangeText={(text) => onUpdate({ name: text })}
           placeholder="Enter dog's name"
         />
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Age Group *
         </AppText>
-        <View style={styles.optionsRow}>
+        <View style={editStyles.optionsRow}>
           {AGE_GROUPS.map((group) => (
             <TouchableOpacity
               key={group.value}
               style={[
-                styles.optionButton,
-                dog.ageGroup === group.value && styles.optionButtonSelected,
+                editStyles.optionButton,
+                dog.ageGroup === group.value && editStyles.optionButtonSelected,
               ]}
               onPress={() => onUpdate({ ageGroup: group.value })}
             >
@@ -180,18 +186,18 @@ function DogForm({
         </View>
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Breed *
         </AppText>
         <TouchableOpacity
-          style={styles.input}
+          style={editStyles.input}
           onPress={() => setShowBreedModal(true)}
         >
           <AppText
             variant="body"
             color={dog.breed ? 'text' : Colors.text}
-            style={!dog.breed && styles.placeholder}
+            style={!dog.breed && editStyles.placeholder}
           >
             {dog.breed || 'Select breed'}
           </AppText>
@@ -202,27 +208,27 @@ function DogForm({
           animationType="slide"
           onRequestClose={() => setShowBreedModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
+          <View style={editStyles.modalOverlay}>
+            <View style={editStyles.modalContent}>
+              <View style={editStyles.modalHeader}>
                 <AppText variant="heading">Select Breed</AppText>
                 <TouchableOpacity onPress={() => setShowBreedModal(false)}>
                   <AppText variant="body" color={Colors.primary}>Close</AppText>
                 </TouchableOpacity>
               </View>
               <TextInput
-                style={styles.searchInput}
+                style={editStyles.searchInput}
                 placeholder="Search breeds..."
                 value={breedSearch}
                 onChangeText={setBreedSearch}
               />
-              <ScrollView style={styles.breedList}>
+              <ScrollView style={editStyles.breedList}>
                 {filteredBreeds.map((breed) => (
                   <TouchableOpacity
                     key={breed}
                     style={[
-                      styles.breedItem,
-                      dog.breed === breed && styles.breedItemSelected,
+                      editStyles.breedItem,
+                      dog.breed === breed && editStyles.breedItemSelected,
                     ]}
                     onPress={() => selectBreed(breed)}
                   >
@@ -240,17 +246,17 @@ function DogForm({
         </Modal>
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Size *
         </AppText>
-        <View style={styles.optionsRow}>
+        <View style={editStyles.optionsRow}>
           {SIZES.map((size) => (
             <TouchableOpacity
               key={size.value}
               style={[
-                styles.optionButton,
-                dog.size === size.value && styles.optionButtonSelected,
+                editStyles.optionButton,
+                dog.size === size.value && editStyles.optionButtonSelected,
               ]}
               onPress={() => onUpdate({ size: size.value })}
             >
@@ -265,17 +271,17 @@ function DogForm({
         </View>
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Energy Level *
         </AppText>
-        <View style={styles.optionsRow}>
+        <View style={editStyles.optionsRow}>
           {ENERGY_LEVELS.map((level) => (
             <TouchableOpacity
               key={level.value}
               style={[
-                styles.optionButton,
-                dog.energy === level.value && styles.optionButtonSelected,
+                editStyles.optionButton,
+                dog.energy === level.value && editStyles.optionButtonSelected,
               ]}
               onPress={() => onUpdate({ energy: level.value })}
             >
@@ -290,14 +296,14 @@ function DogForm({
         </View>
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Play Styles (select up to 3) *
         </AppText>
-        <AppText variant="caption" style={styles.hint}>
+        <AppText variant="caption" style={editStyles.hint}>
           {dog.playStyles?.length || 0} of 3 selected
         </AppText>
-        <View style={styles.playStylesGrid}>
+        <View style={editStyles.playStylesGrid}>
           {PLAY_STYLES.map((style) => {
             const isSelected = dog.playStyles?.includes(style.value) || false;
             const isDisabled = !isSelected && (dog.playStyles?.length || 0) >= 3;
@@ -305,9 +311,9 @@ function DogForm({
               <TouchableOpacity
                 key={style.value}
                 style={[
-                  styles.playStyleButton,
-                  isSelected && styles.playStyleButtonSelected,
-                  isDisabled && styles.playStyleButtonDisabled,
+                  editStyles.playStyleButton,
+                  isSelected && editStyles.playStyleButtonSelected,
+                  isDisabled && editStyles.playStyleButtonDisabled,
                 ]}
                 onPress={() => togglePlayStyle(style.value)}
                 disabled={isDisabled}
@@ -315,7 +321,7 @@ function DogForm({
                 <AppText
                   variant="caption"
                   color={isSelected ? 'background' : 'text'}
-                  style={isDisabled && styles.disabledText}
+                  style={isDisabled && editStyles.disabledText}
                 >
                   {style.label}
                 </AppText>
@@ -325,17 +331,17 @@ function DogForm({
         </View>
       </View>
 
-      <View style={styles.field}>
-        <AppText variant="body" style={styles.label}>
+      <View style={editStyles.field}>
+        <AppText variant="body" style={editStyles.label}>
           Temperament *
         </AppText>
-        <View style={styles.optionsRow}>
+        <View style={editStyles.optionsRow}>
           {TEMPERAMENTS.map((temp) => (
             <TouchableOpacity
               key={temp.value}
               style={[
-                styles.optionButton,
-                dog.temperament === temp.value && styles.optionButtonSelected,
+                editStyles.optionButton,
+                dog.temperament === temp.value && editStyles.optionButtonSelected,
               ]}
               onPress={() => selectTemperament(temp.value)}
             >
@@ -353,46 +359,124 @@ function DogForm({
   );
 }
 
-export default function MyPackTab() {
+interface MyPackTabProps {
+  onNewDogAdded?: () => void;
+}
+
+export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
+  const router = useRouter();
   const { user } = useAuth();
   const { draft, updateDogs, updateHuman, updateLocation } = useProfileDraft();
-  const [dogs, setDogs] = useState<DogProfile[]>(
-    draft.dogs.length > 0
+  const [editMode, setEditMode] = useState<EditMode>('none');
+  
+  // Store original data to compare for new dogs detection
+  const [originalDogs, setOriginalDogs] = useState<DogProfile[]>([]);
+  
+  // Edit mode state
+  const [dogs, setDogs] = useState<DogProfile[]>([]);
+  const [name, setName] = useState('');
+  const [city, setCity] = useState('');
+  const [citySuggestions, setCitySuggestions] = useState<{ name: string; fullAddress: string }[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [locationFromGPS, setLocationFromGPS] = useState(false);
+
+  // Load initial data from draft
+  useEffect(() => {
+    const loadedDogs = draft.dogs.length > 0
       ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
           ...dog,
           slot: dog.slot || (index + 1),
         }))
-      : []
-  );
-  const [name, setName] = useState(draft.human.name || '');
-  const [city, setCity] = useState(draft.location?.city || '');
-  const [citySuggestions, setCitySuggestions] = useState<{ name: string; fullAddress: string }[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [locationFromGPS, setLocationFromGPS] = useState(draft.location?.useCurrentLocation || false);
+      : [];
+    setOriginalDogs(loadedDogs);
+  }, [draft]);
 
-  // Autosave debounce timer
-  const autosaveTimerRef = React.useRef<NodeJS.Timeout | null>(null);
+  // Enter edit mode
+  const handleEditDogs = () => {
+    const loadedDogs = draft.dogs.length > 0
+      ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
+          ...dog,
+          slot: dog.slot || (index + 1),
+        }))
+      : [];
+    setDogs(loadedDogs);
+    setOriginalDogs(loadedDogs);
+    setEditMode('dogs');
+  };
 
-  // Load initial data
-  useEffect(() => {
-    if (draft.dogs.length > 0) {
-      setDogs(draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
-        ...dog,
-        slot: dog.slot || (index + 1),
-      })));
-    }
+  const handleEditHuman = () => {
     setName(draft.human.name || '');
     setCity(draft.location?.city || '');
     setLocationFromGPS(draft.location?.useCurrentLocation || false);
-  }, [draft]);
+    setEditMode('human');
+  };
 
-  // Autosave function
-  const autosave = useCallback(async () => {
-    if (!user?.id) return;
+  const handleCancelEdit = () => {
+    setEditMode('none');
+    setDogs([]);
+    setName('');
+    setCity('');
+    setLocationFromGPS(false);
+  };
+
+  // Validation
+  const validateDogs = (): boolean => {
+    if (dogs.length === 0) return false;
+    return dogs.every((dog) => {
+      return (
+        dog.name.trim() &&
+        dog.ageGroup &&
+        dog.breed &&
+        dog.size &&
+        dog.energy &&
+        dog.playStyles.length > 0 &&
+        dog.temperament !== null
+      );
+    });
+  };
+
+  const validateHuman = (): boolean => {
+    return name.trim().length > 0;
+  };
+
+  // Check if new dogs were added (dogs with slots that weren't in original)
+  const hasNewDogs = (): boolean => {
+    const originalSlots = new Set(originalDogs.map(d => d.slot));
+    return dogs.some(dog => !originalSlots.has(dog.slot));
+  };
+
+  // Save handlers
+  const handleSaveDogs = async () => {
+    if (!user?.id || !validateDogs()) return;
 
     try {
+      // Update draft context
       updateDogs(dogs);
+      
+      // Save to database
+      await saveDogData(user.id, dogs);
+
+      // Exit edit mode
+      setEditMode('none');
+      
+      // Refresh the view by updating original dogs
+      setOriginalDogs(dogs);
+
+      // If new dogs were added, switch to photos tab
+      if (hasNewDogs() && onNewDogAdded) {
+        onNewDogAdded();
+      }
+    } catch (error) {
+      console.error('[MyPackTab] Failed to save dogs:', error);
+    }
+  };
+
+  const handleSaveHuman = async () => {
+    if (!user?.id || !validateHuman()) return;
+
+    try {
+      // Update draft context
       updateHuman({ name });
       updateLocation({
         useCurrentLocation: locationFromGPS,
@@ -401,9 +485,9 @@ export default function MyPackTab() {
         longitude: locationFromGPS ? draft.location?.longitude : undefined,
       });
 
-      await updateProfileData(
+      // Save to database
+      await saveHumanData(
         user.id,
-        dogs,
         { name, dateOfBirth: draft.human.dateOfBirth, gender: draft.human.gender },
         {
           useCurrentLocation: locationFromGPS,
@@ -412,27 +496,13 @@ export default function MyPackTab() {
           longitude: locationFromGPS ? draft.location?.longitude : undefined,
         }
       );
+
+      // Exit edit mode
+      setEditMode('none');
     } catch (error) {
-      console.error('[MyPackTab] Failed to autosave:', error);
+      console.error('[MyPackTab] Failed to save human data:', error);
     }
-  }, [user, dogs, name, city, locationFromGPS, draft, updateDogs, updateHuman, updateLocation]);
-
-  // Debounced autosave
-  useEffect(() => {
-    if (autosaveTimerRef.current) {
-      clearTimeout(autosaveTimerRef.current);
-    }
-
-    autosaveTimerRef.current = setTimeout(() => {
-      autosave();
-    }, 1000); // Save after 1 second of no changes
-
-    return () => {
-      if (autosaveTimerRef.current) {
-        clearTimeout(autosaveTimerRef.current);
-      }
-    };
-  }, [dogs, name, city, locationFromGPS]);
+  };
 
   const handleAddDog = () => {
     if (dogs.length >= MAX_DOGS) return;
@@ -515,105 +585,279 @@ export default function MyPackTab() {
     setShowSuggestions(false);
   };
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.keyboardAvoidingView}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-    >
+  // Render read-only view
+  if (editMode === 'none') {
+    return (
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
       >
+        {/* My Dogs Section */}
         <View style={styles.section}>
-          <AppText variant="heading" style={styles.sectionTitle}>
-            Your Pack
-          </AppText>
-          {dogs.map((dog) => (
-            <DogForm
-              key={dog.id}
-              dog={dog}
-              onUpdate={(updates) => handleUpdateDog(dog.id, updates)}
-              onRemove={() => handleRemoveDog(dog.id)}
-              canRemove={dogs.length > 1}
-            />
-          ))}
+          <View style={styles.sectionHeader}>
+            <AppText variant="heading" style={styles.sectionTitle}>
+              My Dogs
+            </AppText>
+            <TouchableOpacity onPress={handleEditDogs} style={styles.editButton}>
+              <AppText variant="body" color={Colors.primary}>
+                Edit
+              </AppText>
+            </TouchableOpacity>
+          </View>
+          
+          {draft.dogs.length === 0 ? (
+            <AppText variant="body" style={styles.emptyText}>
+              No dogs added yet
+            </AppText>
+          ) : (
+            draft.dogs.map((dog) => (
+              <Card key={dog.id} style={styles.dogCard}>
+                <AppText variant="heading" style={styles.dogName}>
+                  {dog.name || 'Unnamed Dog'}
+                </AppText>
+                <View style={styles.dogDetails}>
+                  <View style={styles.dogDetailRow}>
+                    <AppText variant="body" style={styles.dogLabel}>
+                      Breed
+                    </AppText>
+                    <AppText variant="body" style={styles.dogValue}>
+                      {dog.breed || 'Not set'}
+                    </AppText>
+                  </View>
+                  <View style={styles.dogDetailRow}>
+                    <AppText variant="body" style={styles.dogLabel}>
+                      Age Group
+                    </AppText>
+                    <AppText variant="body" style={styles.dogValue}>
+                      {dog.ageGroup ? AGE_GROUPS.find(g => g.value === dog.ageGroup)?.label : 'Not set'}
+                    </AppText>
+                  </View>
+                  <View style={styles.dogDetailRow}>
+                    <AppText variant="body" style={styles.dogLabel}>
+                      Size
+                    </AppText>
+                    <AppText variant="body" style={styles.dogValue}>
+                      {dog.size ? SIZES.find(s => s.value === dog.size)?.label : 'Not set'}
+                    </AppText>
+                  </View>
+                  <View style={styles.dogDetailRow}>
+                    <AppText variant="body" style={styles.dogLabel}>
+                      Energy Level
+                    </AppText>
+                    <AppText variant="body" style={styles.dogValue}>
+                      {dog.energy ? ENERGY_LEVELS.find(e => e.value === dog.energy)?.label : 'Not set'}
+                    </AppText>
+                  </View>
+                  <View style={styles.dogDetailRow}>
+                    <AppText variant="body" style={styles.dogLabel}>
+                      Play Style
+                    </AppText>
+                    <AppText variant="body" style={styles.dogValue}>
+                      {dog.playStyles && dog.playStyles.length > 0 
+                        ? dog.playStyles.map(style => PLAY_STYLES.find(s => s.value === style)?.label || style).join(', ')
+                        : 'Not set'}
+                    </AppText>
+                  </View>
+                  <View style={styles.dogDetailRow}>
+                    <AppText variant="body" style={styles.dogLabel}>
+                      Temperament
+                    </AppText>
+                    <AppText variant="body" style={styles.dogValue}>
+                      {dog.temperament ? TEMPERAMENTS.find(t => t.value === dog.temperament)?.label : 'Not set'}
+                    </AppText>
+                  </View>
+                </View>
+              </Card>
+            ))
+          )}
+        </View>
+
+        {/* About Me Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <AppText variant="heading" style={styles.sectionTitle}>
+              About Me
+            </AppText>
+            <TouchableOpacity onPress={handleEditHuman} style={styles.editButton}>
+              <AppText variant="body" color={Colors.primary}>
+                Edit
+              </AppText>
+            </TouchableOpacity>
+          </View>
+          
+          <Card style={styles.humanCard}>
+            <View style={styles.humanDetail}>
+              <AppText variant="body" style={styles.humanLabel}>
+                Name
+              </AppText>
+              <AppText variant="body" style={styles.humanValue}>
+                {draft.human.name || 'Not set'}
+              </AppText>
+            </View>
+            <View style={styles.humanDetail}>
+              <AppText variant="body" style={styles.humanLabel}>
+                Date of Birth
+              </AppText>
+              <AppText variant="body" style={styles.humanValue}>
+                {draft.human.dateOfBirth || 'Not set'}
+              </AppText>
+            </View>
+            <View style={styles.humanDetail}>
+              <AppText variant="body" style={styles.humanLabel}>
+                Gender
+              </AppText>
+              <AppText variant="body" style={styles.humanValue}>
+                {draft.human.gender 
+                  ? draft.human.gender.charAt(0).toUpperCase() + draft.human.gender.slice(1).replace(/-/g, ' ')
+                  : 'Not set'}
+              </AppText>
+            </View>
+            <View style={styles.humanDetail}>
+              <AppText variant="body" style={styles.humanLabel}>
+                City
+              </AppText>
+              <AppText variant="body" style={styles.humanValue}>
+                {draft.location?.city || 'Not set'}
+              </AppText>
+            </View>
+          </Card>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  // Render edit mode for dogs
+  if (editMode === 'dogs') {
+    return (
+      <KeyboardAvoidingView
+        style={editStyles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+        <ScrollView
+          contentContainerStyle={editStyles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={editStyles.header}>
+            <TouchableOpacity onPress={handleCancelEdit} style={editStyles.backButton}>
+              <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+            </TouchableOpacity>
+            <AppText variant="heading" style={editStyles.title}>
+              Edit Your Pack
+            </AppText>
+          </View>
+
+          <View style={editStyles.dogsList}>
+            {dogs.map((dog) => (
+              <DogFormEdit
+                key={dog.id}
+                dog={dog}
+                onUpdate={(updates) => handleUpdateDog(dog.id, updates)}
+                onRemove={() => handleRemoveDog(dog.id)}
+                canRemove={dogs.length > 1}
+              />
+            ))}
+          </View>
+
           {dogs.length < MAX_DOGS && (
             <TouchableOpacity 
               onPress={handleAddDog} 
-              style={styles.addButton}
+              style={editStyles.addButton}
             >
-              <AppText 
-                variant="body" 
-                color={Colors.primary}
-              >
+              <AppText variant="body" color={Colors.primary}>
                 + Add another dog
               </AppText>
             </TouchableOpacity>
           )}
-          {dogs.length >= MAX_DOGS && (
-            <AppText variant="caption" style={styles.helperText}>
-              You can add up to 3 dogs right now.
+
+          <View style={editStyles.buttonContainer}>
+            <AppButton
+              variant="primary"
+              onPress={handleSaveDogs}
+              disabled={!validateDogs()}
+              style={editStyles.button}
+            >
+              Save
+            </AppButton>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // Render edit mode for human
+  if (editMode === 'human') {
+    return (
+      <KeyboardAvoidingView
+        style={editStyles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+        <ScrollView
+          contentContainerStyle={editStyles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={editStyles.header}>
+            <TouchableOpacity onPress={handleCancelEdit} style={editStyles.backButton}>
+              <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+            </TouchableOpacity>
+            <AppText variant="heading" style={editStyles.title}>
+              Edit About Me
             </AppText>
-          )}
-        </View>
+          </View>
 
-        <View style={styles.section}>
-          <AppText variant="heading" style={styles.sectionTitle}>
-            Little about yourself
-          </AppText>
-
-          <View style={styles.field}>
-            <AppText variant="body" style={styles.label}>
+          <View style={editStyles.field}>
+            <AppText variant="body" style={editStyles.label}>
               Name *
             </AppText>
             <TextInput
-              style={styles.input}
+              style={editStyles.input}
               value={name}
               onChangeText={setName}
               placeholder="Enter your name"
             />
           </View>
 
-          <View style={styles.field}>
-            <AppText variant="body" style={styles.label}>
+          <View style={editStyles.field}>
+            <AppText variant="body" style={editStyles.label}>
               Date of Birth
             </AppText>
-            <View style={[styles.input, styles.disabledInput]}>
-              <AppText variant="body" style={styles.disabledText}>
+            <View style={[editStyles.input, editStyles.disabledInput]}>
+              <AppText variant="body" style={editStyles.disabledText}>
                 {draft.human.dateOfBirth || 'Not set'}
               </AppText>
             </View>
-            <AppText variant="caption" style={styles.hint}>
+            <AppText variant="caption" style={editStyles.hint}>
               Date of birth cannot be changed
             </AppText>
           </View>
 
-          <View style={styles.field}>
-            <AppText variant="body" style={styles.label}>
+          <View style={editStyles.field}>
+            <AppText variant="body" style={editStyles.label}>
               Gender
             </AppText>
-            <View style={[styles.input, styles.disabledInput]}>
-              <AppText variant="body" style={styles.disabledText}>
+            <View style={[editStyles.input, editStyles.disabledInput]}>
+              <AppText variant="body" style={editStyles.disabledText}>
                 {draft.human.gender 
                   ? draft.human.gender.charAt(0).toUpperCase() + draft.human.gender.slice(1).replace(/-/g, ' ')
                   : 'Not set'}
               </AppText>
             </View>
-            <AppText variant="caption" style={styles.hint}>
+            <AppText variant="caption" style={editStyles.hint}>
               Gender cannot be changed
             </AppText>
           </View>
 
-          <View style={styles.field}>
-            <AppText variant="body" style={styles.label}>
+          <View style={editStyles.field}>
+            <AppText variant="body" style={editStyles.label}>
               City or Zip Code
             </AppText>
-            <View style={styles.cityInputRow}>
-              <View style={styles.inputWrapper}>
+            <View style={editStyles.cityInputRow}>
+              <View style={editStyles.inputWrapper}>
                 <TextInput
-                  style={styles.input}
+                  style={editStyles.input}
                   value={city}
                   onChangeText={handleCityChange}
                   placeholder="Enter city name or zip code"
@@ -624,18 +868,18 @@ export default function MyPackTab() {
                   }}
                 />
                 {isSearching && (
-                  <View style={styles.searchingIndicator}>
-                    <AppText variant="caption" style={styles.searchingText}>
+                  <View style={editStyles.searchingIndicator}>
+                    <AppText variant="caption" style={editStyles.searchingText}>
                       Searching...
                     </AppText>
                   </View>
                 )}
                 {showSuggestions && citySuggestions.length > 0 && (
-                  <View style={styles.suggestionsContainer}>
+                  <View style={editStyles.suggestionsContainer}>
                     {citySuggestions.map((suggestion, index) => (
                       <TouchableOpacity
                         key={index}
-                        style={styles.suggestionItem}
+                        style={editStyles.suggestionItem}
                         onPress={() => selectCity(suggestion)}
                       >
                         <AppText variant="body">{suggestion.fullAddress}</AppText>
@@ -645,26 +889,37 @@ export default function MyPackTab() {
                 )}
               </View>
               <TouchableOpacity
-                style={styles.gpsButton}
+                style={editStyles.gpsButton}
                 onPress={handleUseCurrentLocation}
               >
                 <MaterialIcons name="my-location" size={24} color={Colors.primary} />
               </TouchableOpacity>
             </View>
-            <AppText variant="caption" style={styles.privacyNote}>
+            <AppText variant="caption" style={editStyles.privacyNote}>
               We'll never show your exact location.
             </AppText>
           </View>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
-  );
+
+          <View style={editStyles.buttonContainer}>
+            <AppButton
+              variant="primary"
+              onPress={handleSaveHuman}
+              disabled={!validateHuman()}
+              style={editStyles.button}
+            >
+              Save
+            </AppButton>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  return null;
 }
 
+// Read-only view styles
 const styles = StyleSheet.create({
-  keyboardAvoidingView: {
-    flex: 1,
-  },
   scrollContent: {
     padding: Spacing.lg,
     paddingBottom: Spacing.xl,
@@ -672,8 +927,88 @@ const styles = StyleSheet.create({
   section: {
     marginBottom: Spacing.xl,
   },
-  sectionTitle: {
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: Spacing.md,
+  },
+  sectionTitle: {
+    flex: 1,
+  },
+  editButton: {
+    padding: Spacing.sm,
+  },
+  emptyText: {
+    opacity: 0.6,
+    fontStyle: 'italic',
+  },
+  dogCard: {
+    marginBottom: Spacing.md,
+    padding: Spacing.md,
+  },
+  dogName: {
+    marginBottom: Spacing.md,
+  },
+  dogDetails: {
+    gap: 0,
+  },
+  dogDetailRow: {
+    flexDirection: 'row',
+    marginBottom: Spacing.sm,
+  },
+  dogLabel: {
+    fontWeight: '600',
+    marginRight: Spacing.sm,
+    minWidth: 120,
+  },
+  dogValue: {
+    flex: 1,
+    opacity: 0.7,
+  },
+  humanCard: {
+    padding: Spacing.md,
+  },
+  humanDetail: {
+    flexDirection: 'row',
+    marginBottom: Spacing.sm,
+  },
+  humanLabel: {
+    fontWeight: '600',
+    marginRight: Spacing.sm,
+    minWidth: 120,
+  },
+  humanValue: {
+    flex: 1,
+    opacity: 0.7,
+  },
+});
+
+// Edit mode styles (reused from onboarding pages)
+const editStyles = StyleSheet.create({
+  keyboardAvoidingView: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: Spacing.lg,
+    paddingBottom: Spacing.xl,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.xl,
+  },
+  backButton: {
+    padding: Spacing.sm,
+    marginLeft: -Spacing.sm,
+    marginRight: Spacing.md,
+  },
+  title: {
+    flex: 1,
+  },
+  dogsList: {
+    gap: Spacing.lg,
+    marginBottom: Spacing.lg,
   },
   dogCard: {
     marginBottom: Spacing.md,
@@ -800,12 +1135,13 @@ const styles = StyleSheet.create({
   addButton: {
     padding: Spacing.md,
     alignItems: 'center',
-    marginTop: Spacing.md,
+    marginBottom: Spacing.lg,
   },
-  helperText: {
-    textAlign: 'center',
-    marginTop: Spacing.sm,
-    opacity: 0.7,
+  buttonContainer: {
+    marginTop: Spacing.lg,
+  },
+  button: {
+    width: '100%',
   },
   cityInputRow: {
     flexDirection: 'row',
@@ -859,4 +1195,3 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
 });
-

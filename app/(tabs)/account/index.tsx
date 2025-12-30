@@ -165,7 +165,7 @@ export default function AccountScreen() {
       </View>
 
       <View style={styles.tabContainer}>
-        {activeTab === 'pack' && <MyPackTab />}
+        {activeTab === 'pack' && <MyPackTab onNewDogAdded={() => setActiveTab('photos')} />}
         {activeTab === 'photos' && <OurPhotosTab />}
         {activeTab === 'badges' && <MyBadgesTab />}
       </View>

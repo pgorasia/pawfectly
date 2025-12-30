@@ -94,7 +94,40 @@ export default function AuthScreen() {
               });
             }
 
-            // Check onboarding state
+            // Check if profile validation failed (needs corrective action)
+            // If so, route to the page indicated by last_step (usually 'photos')
+            const validationStatus = userData.profile?.validation_status;
+            const lifecycleStatus = userData.profile?.lifecycle_status;
+            if (validationStatus === 'failed_photos' || validationStatus === 'failed_requirements' || 
+                lifecycleStatus === 'pending_review' || lifecycleStatus === 'limited') {
+              const onboardingState = userData.onboardingState;
+              if (onboardingState?.last_step) {
+                // Route to the page indicated by last_step (e.g., photos page)
+                switch (onboardingState.last_step) {
+                  case 'pack':
+                    router.replace('/(profile)/dogs');
+                    break;
+                  case 'human':
+                    router.replace('/(profile)/human');
+                    break;
+                  case 'photos':
+                    router.replace('/(profile)/photos');
+                    break;
+                  case 'preferences':
+                    router.replace('/(profile)/connection-style');
+                    break;
+                  default:
+                    // Default to photos page for failed validation
+                    router.replace('/(profile)/photos');
+                }
+              } else {
+                // No onboarding state, default to photos page
+                router.replace('/(profile)/photos');
+              }
+              return;
+            }
+
+            // Check onboarding state for normal flow
             const onboardingState = userData.onboardingState;
             
             if (!onboardingState) {

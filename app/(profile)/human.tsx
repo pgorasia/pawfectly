@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
@@ -12,6 +12,8 @@ import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { searchLocation } from '@/services/geocoding/locationService';
 import { saveHumanData, setCurrentStep } from '@/services/supabase/onboardingService';
+import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
+import { supabase } from '@/services/supabase/supabaseClient';
 
 const GENDERS: { label: string; value: Gender }[] = [
   { label: 'Male', value: 'male' },
@@ -81,14 +83,40 @@ export default function HumanScreen() {
   const { user } = useAuth();
   const { draft, updateHuman, updateLocation } = useProfileDraft();
 
-  // Set current step when page loads
-  React.useEffect(() => {
-    if (user?.id) {
-      setCurrentStep(user.id, 'human').catch((error) => {
-        console.error('[HumanScreen] Failed to set current step:', error);
-      });
-    }
-  }, [user?.id]);
+  // Set current step when page loads or when user navigates back to this screen
+  // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user?.id) {
+        // Check lifecycle_status before updating onboarding_status
+        supabase
+          .from('profiles')
+          .select('lifecycle_status')
+          .eq('user_id', user.id)
+          .maybeSingle()
+          .then(({ data: profile, error }) => {
+            if (error && error.code !== 'PGRST116') {
+              console.error('[HumanScreen] Failed to check lifecycle_status:', error);
+              return;
+            }
+            
+            // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
+            if (!profile || profile.lifecycle_status === 'onboarding') {
+              // First ensure the row exists, then set the step
+              getOrCreateOnboarding(user.id)
+                .then(() => setLastStep(user.id, 'human'))
+                .catch((error) => {
+                  console.error('[HumanScreen] Failed to set current step:', error);
+                });
+            } else {
+              console.log(
+                `[HumanScreen] Skipping onboarding_status update - lifecycle_status is '${profile.lifecycle_status}', not 'onboarding'`
+              );
+            }
+          });
+      }
+    }, [user?.id])
+  );
   const [name, setName] = useState(draft.human.name || '');
   const [dateOfBirth, setDateOfBirth] = useState(draft.human.dateOfBirth || '');
   const [gender, setGender] = useState<Gender | null>(draft.human.gender);
@@ -175,7 +203,7 @@ export default function HumanScreen() {
     
     updateLocation(locationData);
 
-    // Save to database asynchronously (non-blocking)
+    // Save to database asynchronously (non-blocking) - fire-and-forget autosave
     if (user?.id) {
       saveHumanData(user.id, {
         name,
@@ -183,6 +211,12 @@ export default function HumanScreen() {
         gender,
       }, locationData).catch((error) => {
         console.error('[HumanScreen] Failed to save human data:', error);
+        // Don't block navigation on error
+      });
+
+      // Mark human as submitted and advance to photos step
+      markSubmitted(user.id, 'human').catch((error) => {
+        console.error('[HumanScreen] Failed to mark human as submitted:', error);
         // Don't block navigation on error
       });
     }

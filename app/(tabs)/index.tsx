@@ -23,12 +23,16 @@ export default function FeedScreen() {
           </TouchableOpacity>
         </View>
       </View>
+
       <View style={styles.content}>
         <AppText variant="heading" style={styles.title}>
           Feed Coming Soon
         </AppText>
         <AppText variant="body" style={styles.subtitle}>
           Your feed of potential connections will appear here.
+        </AppText>
+        <AppText variant="caption" style={styles.note}>
+          Note: Feed will only show profiles with lifecycle_status in ('active','limited') and only approved photos.
         </AppText>
       </View>
     </ScreenContainer>
@@ -68,5 +72,11 @@ const styles = StyleSheet.create({
   subtitle: {
     textAlign: 'center',
     opacity: 0.7,
+  },
+  note: {
+    marginTop: Spacing.md,
+    textAlign: 'center',
+    opacity: 0.5,
+    fontStyle: 'italic',
   },
 });

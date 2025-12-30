@@ -15,8 +15,8 @@ import { Spacing } from '../../constants/spacing';
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const CROP_FRAME_WIDTH = SCREEN_WIDTH * 0.85;
 const CROP_FRAME_HEIGHT = CROP_FRAME_WIDTH * (5 / 4); // 4:5 aspect ratio
-const MIN_SCALE = 1.0;
-const MAX_SCALE = 3.0;
+const MIN_SCALE = 0.3; // Allow zooming out to 30% of original size
+const MAX_SCALE = 3.0; // Allow zooming in to 300% of original size
 
 export interface CropperTransform {
   scale: number;

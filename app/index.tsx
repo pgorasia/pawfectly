@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
-import { getOnboardingState, loadUserData } from '@/services/supabase/onboardingService';
+import { loadBootstrap, getOrCreateOnboarding } from '@/services/profile/statusRepository';
 import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { AppText } from '@/components/ui/AppText';
@@ -24,46 +24,63 @@ export default function Index() {
       }
 
       try {
-        // Load user data from database
-        const userData = await loadUserData(user.id);
+        // Load bootstrap data (profile, onboarding, draft)
+        const bootstrap = await loadBootstrap(user.id);
+        
+        // Ensure onboarding_status row exists
+        await getOrCreateOnboarding(user.id);
         
         // Load data into draft context
-        if (userData.profile || userData.dogs.length > 0 || userData.preferences) {
+        if (bootstrap.draft.profile || bootstrap.draft.dogs.length > 0 || bootstrap.draft.preferences) {
           loadFromDatabase({
-            profile: userData.profile,
-            dogs: userData.dogs,
-            preferences: userData.preferences,
+            profile: bootstrap.draft.profile,
+            dogs: bootstrap.draft.dogs,
+            preferences: bootstrap.draft.preferences,
           });
         }
 
-        // Check onboarding state
-        const onboardingState = userData.onboardingState;
+        const profile = bootstrap.profile;
+        const onboarding = bootstrap.onboarding;
 
-        if (!onboardingState) {
+        // Routing logic:
+        // 1. If profile.lifecycle_status is 'active' => route to feed
+        if (profile?.lifecycle_status === 'active') {
+          router.replace('/(tabs)');
+          return;
+        }
+
+        // 2. Else (onboarding, pending_review, or limited):
+        //    - If last_step is 'done' => route to Photos (corrective action)
+        //    - Else => route to onboarding_status.last_step
+        if (!onboarding) {
           // New user - go to pack page
           router.replace('/(profile)/dogs');
-        } else if (onboardingState.last_step === 'done') {
-          // Completed onboarding - go to feed
-          router.replace('/(tabs)');
-        } else {
-          // Route to the page indicated by last_step (current page user is on)
-          switch (onboardingState.last_step) {
-            case 'pack':
-              router.replace('/(profile)/dogs');
-              break;
-            case 'human':
-              router.replace('/(profile)/human');
-              break;
-            case 'photos':
-              router.replace('/(profile)/photos');
-              break;
-            case 'preferences':
-              router.replace('/(profile)/connection-style');
-              break;
-            default:
-              // Fallback to dogs page
-              router.replace('/(profile)/dogs');
-          }
+          return;
+        }
+
+        if (onboarding.last_step === 'done') {
+          // Route to Photos (only corrective action users can take)
+          router.replace('/(profile)/photos');
+          return;
+        }
+
+        // Route to onboarding.last_step
+        switch (onboarding.last_step) {
+          case 'pack':
+            router.replace('/(profile)/dogs');
+            break;
+          case 'human':
+            router.replace('/(profile)/human');
+            break;
+          case 'photos':
+            router.replace('/(profile)/photos');
+            break;
+          case 'preferences':
+            router.replace('/(profile)/connection-style');
+            break;
+          default:
+            // Fallback to dogs page
+            router.replace('/(profile)/dogs');
         }
       } catch (error) {
         console.error('[Index] Error checking onboarding state:', error);

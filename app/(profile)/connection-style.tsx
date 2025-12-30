@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
@@ -12,6 +12,8 @@ import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { savePreferencesData, setCurrentStep, updateOnboardingState } from '@/services/supabase/onboardingService';
+import { markSubmitted, startValidation, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
+import { supabase } from '@/services/supabase/supabaseClient';
 
 const CONNECTION_STYLES: {
   emoji: string;
@@ -247,20 +249,40 @@ export default function ConnectionStyleScreen() {
     draft.connectionStyles || []
   );
 
-  // Set current step and mark photos as completed when page loads
-  useEffect(() => {
-    if (user?.id) {
-      setCurrentStep(user.id, 'preferences').catch((error) => {
-        console.error('[ConnectionStyleScreen] Failed to set current step:', error);
-      });
-      // Mark photos as completed since user has moved on to preferences
-      updateOnboardingState(user.id, {
-        photos_completed: true,
-      }).catch((error) => {
-        console.error('[ConnectionStyleScreen] Failed to mark photos as completed:', error);
-      });
-    }
-  }, [user?.id]);
+  // Set current step when page loads or when user navigates back to this screen
+  // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user?.id) {
+        // Check lifecycle_status before updating onboarding_status
+        supabase
+          .from('profiles')
+          .select('lifecycle_status')
+          .eq('user_id', user.id)
+          .maybeSingle()
+          .then(({ data: profile, error }) => {
+            if (error && error.code !== 'PGRST116') {
+              console.error('[ConnectionStyleScreen] Failed to check lifecycle_status:', error);
+              return;
+            }
+            
+            // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
+            if (!profile || profile.lifecycle_status === 'onboarding') {
+              // First ensure the row exists, then set the step
+              getOrCreateOnboarding(user.id)
+                .then(() => setLastStep(user.id, 'preferences'))
+                .catch((error) => {
+                  console.error('[ConnectionStyleScreen] Failed to set current step:', error);
+                });
+            } else {
+              console.log(
+                `[ConnectionStyleScreen] Skipping onboarding_status update - lifecycle_status is '${profile.lifecycle_status}', not 'onboarding'`
+              );
+            }
+          });
+      }
+    }, [user?.id])
+  );
 
   const toggleStyle = (style: ConnectionStyle) => {
     const newStyles = selectedStyles.includes(style)
@@ -274,16 +296,64 @@ export default function ConnectionStyleScreen() {
     updatePreferences(style, prefs);
   };
 
-  const handleContinue = () => {
-    // Save to database asynchronously (non-blocking)
-    if (user?.id) {
+  const handleContinue = async () => {
+    if (!user?.id) return;
+
+    try {
+      // Save preferences draft (fire-and-forget autosave)
       savePreferencesData(user.id, selectedStyles, draft.preferences).catch((error) => {
         console.error('[ConnectionStyleScreen] Failed to save preferences data:', error);
         // Don't block navigation on error
       });
-    }
 
-    router.push('/(tabs)');
+      // Mark preferences as submitted (sets last_step='done')
+      await markSubmitted(user.id, 'preferences');
+
+      // Start validation process (sets profile to pending_review/in_progress and returns runId)
+      const validationRunId = await startValidation(user.id);
+
+      // Trigger profile validation edge function
+      // This validates all photos and calls applyValidationResult with runId guard
+      try {
+        const { supabase } = await import('@/services/supabase/supabaseClient');
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session?.access_token) {
+          const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+          if (!supabaseUrl) {
+            console.error('[ConnectionStyleScreen] EXPO_PUBLIC_SUPABASE_URL not set');
+          } else {
+            const response = await fetch(`${supabaseUrl}/functions/v1/validate-profile`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`,
+              },
+              body: JSON.stringify({
+                user_id: user.id,
+                validation_run_id: validationRunId,
+              }),
+            });
+
+            if (!response.ok) {
+              console.error('[ConnectionStyleScreen] Validation job failed:', await response.text());
+            } else {
+              console.log('[ConnectionStyleScreen] Validation job completed:', await response.json());
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[ConnectionStyleScreen] Failed to trigger validation job:', error);
+        // Don't block navigation - validation can run asynchronously
+      }
+
+      // Route user to /(tabs) immediately (user can still access app while pending review)
+      router.replace('/(tabs)');
+    } catch (error) {
+      console.error('[ConnectionStyleScreen] Failed to start exploring:', error);
+      // Don't block navigation on error - user can retry later
+      router.replace('/(tabs)');
+    }
   };
 
   const canContinue = selectedStyles.length > 0;

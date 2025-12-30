@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
@@ -12,7 +12,9 @@ import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { deletePhotosByDogSlot } from '@/services/supabase/photoService';
-import { saveDogData, setCurrentStep } from '@/services/supabase/onboardingService';
+import { saveDogData } from '@/services/supabase/onboardingService';
+import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
+import { supabase } from '@/services/supabase/supabaseClient';
 
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
   { label: 'Puppy (0-1 year)', value: 'puppy' },
@@ -367,14 +369,40 @@ export default function DogsScreen() {
   const { user } = useAuth();
   const { draft, updateDogs, updateHuman, updateLocation } = useProfileDraft();
 
-  // Set current step when page loads
-  React.useEffect(() => {
-    if (user?.id) {
-      setCurrentStep(user.id, 'pack').catch((error) => {
-        console.error('[DogsScreen] Failed to set current step:', error);
-      });
-    }
-  }, [user?.id]);
+  // Set current step when page loads or when user navigates back to this screen
+  // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user?.id) {
+        // Check lifecycle_status before updating onboarding_status
+        supabase
+          .from('profiles')
+          .select('lifecycle_status')
+          .eq('user_id', user.id)
+          .maybeSingle()
+          .then(({ data: profile, error }) => {
+            if (error && error.code !== 'PGRST116') {
+              console.error('[DogsScreen] Failed to check lifecycle_status:', error);
+              return;
+            }
+            
+            // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
+            if (!profile || profile.lifecycle_status === 'onboarding') {
+              // First ensure the row exists, then set the step
+              getOrCreateOnboarding(user.id)
+                .then(() => setLastStep(user.id, 'pack'))
+                .catch((error) => {
+                  console.error('[DogsScreen] Failed to set current step:', error);
+                });
+            } else {
+              console.log(
+                `[DogsScreen] Skipping onboarding_status update - lifecycle_status is '${profile.lifecycle_status}', not 'onboarding'`
+              );
+            }
+          });
+      }
+    }, [user?.id])
+  );
   const [dogs, setDogs] = useState<DogProfile[]>(
     draft.dogs.length > 0
       ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
@@ -449,11 +477,17 @@ export default function DogsScreen() {
   const handleContinue = () => {
     updateDogs(dogs);
 
-    // Save to database asynchronously (non-blocking)
+    // Save to database asynchronously (non-blocking) - fire-and-forget autosave
     if (user?.id) {
       // Save only dogs for now, human data will be saved on the human page
       saveDogData(user.id, dogs).catch((error) => {
         console.error('[DogsScreen] Failed to save dog data:', error);
+        // Don't block navigation on error
+      });
+
+      // Mark dog as submitted and advance to human step
+      markSubmitted(user.id, 'dog').catch((error) => {
+        console.error('[DogsScreen] Failed to mark dog as submitted:', error);
         // Don't block navigation on error
       });
     }

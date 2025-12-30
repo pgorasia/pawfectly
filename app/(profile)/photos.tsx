@@ -19,6 +19,7 @@ import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { usePhotoBuckets } from '@/hooks/usePhotoBuckets';
 import { useAuth } from '@/contexts/AuthContext';
 import { setCurrentStep } from '@/services/supabase/onboardingService';
+import { markSubmitted, setLastStep, getOrCreateOnboarding, startValidation } from '@/services/profile/statusRepository';
 import { pickImage } from '@/services/media/imagePicker';
 import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
 import { cropImage } from '@/services/media/cropImage';
@@ -32,17 +33,59 @@ export default function PhotosScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { draft } = useProfileDraft();
+  const [isCorrectiveAction, setIsCorrectiveAction] = React.useState(false);
+  const [lifecycleStatus, setLifecycleStatus] = React.useState<string | null>(null);
 
   // Cropper modal hook
   const { isOpen, imageUri, openCropper, closeCropper, handleConfirm } = useCropperModal();
 
-  // Set current step when page loads
+  // Check profile lifecycle_status and validation_status to determine if this is corrective action
   React.useEffect(() => {
-    if (user?.id) {
-      setCurrentStep(user.id, 'photos').catch((error) => {
-        console.error('[PhotosScreen] Failed to set current step:', error);
-      });
-    }
+    const checkProfileStatus = async () => {
+      if (!user?.id) return;
+      
+      try {
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('lifecycle_status, validation_status')
+          .eq('user_id', user.id)
+          .maybeSingle();
+        
+        if (error && error.code !== 'PGRST116') {
+          console.error('[PhotosScreen] Failed to check profile status:', error);
+          return;
+        }
+        
+        const status = profile?.lifecycle_status;
+        const validationStatus = profile?.validation_status;
+        setLifecycleStatus(status || null);
+        
+        // Determine if this is corrective action (not onboarding)
+        const isCorrective = status && 
+          (status === 'pending_review' || status === 'limited' || status === 'blocked') &&
+          (validationStatus === 'failed_requirements' || validationStatus === 'failed_photos');
+        
+        setIsCorrectiveAction(isCorrective || false);
+        
+        // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist - new user)
+        if (!profile || profile.lifecycle_status === 'onboarding') {
+          // First ensure the row exists, then set the step
+          getOrCreateOnboarding(user.id)
+            .then(() => setLastStep(user.id, 'photos'))
+            .catch((error) => {
+              console.error('[PhotosScreen] Failed to set current step:', error);
+            });
+        } else {
+          console.log(
+            `[PhotosScreen] Skipping onboarding_status update - lifecycle_status is '${status}', not 'onboarding'`
+          );
+        }
+      } catch (error) {
+        console.error('[PhotosScreen] Failed to check profile status:', error);
+      }
+    };
+
+    checkProfileStatus();
   }, [user?.id]);
 
   // Use slot numbers (1, 2, 3) for dog photos
@@ -167,10 +210,11 @@ export default function PhotosScreen() {
     [imageUri, closeCropper, uploadPhotoToBucket, removePhoto, user]
   );
 
-  // Check if continue button should be enabled
-  // Enabled only if each bucket has at least one photo (even if validation is in progress)
-  // AND no rejected photos exist
-  const canContinue = useMemo(() => {
+  // Check if submit/continue button should be enabled
+  // Enabled only if:
+  // - Each bucket has at least one photo
+  // - No rejected photos exist (rejected photos must be removed/replaced)
+  const canSubmit = useMemo(() => {
     // Check if all dog buckets have at least one photo
     const allDogsHavePhotos = dogSlots.every((slot) => {
       const bucket = dogBuckets[slot];
@@ -180,7 +224,7 @@ export default function PhotosScreen() {
     // Check if human bucket has at least one photo
     const humanHasPhotos = humanBucket.photos.length > 0;
 
-    // Check if any photo is rejected
+    // Check if any photo is rejected (must be removed/replaced before submitting)
     const hasRejectedPhotos = 
       Object.values(dogBuckets).some((bucket) =>
         bucket.photos.some((photo) => photo.status === 'rejected')
@@ -190,17 +234,80 @@ export default function PhotosScreen() {
   }, [dogBuckets, humanBucket, dogSlots]);
 
   const handleContinue = () => {
-    if (!canContinue) return;
+    if (!canSubmit || !user?.id) return;
+    
+    // Mark photos as submitted and advance to preferences step (only during onboarding)
+    markSubmitted(user.id, 'photos').catch((error) => {
+      console.error('[PhotosScreen] Failed to mark photos as submitted:', error);
+      // Don't block navigation on error
+    });
+    
     router.push('/(profile)/connection-style');
+  };
+
+  const handleSubmit = async () => {
+    if (!canSubmit || !user?.id) return;
+
+    try {
+      // For corrective action (not onboarding), trigger validation again
+      if (isCorrectiveAction) {
+        // Start new validation process
+        const validationRunId = await startValidation(user.id);
+        
+        // Trigger profile validation edge function
+        try {
+          const { supabase } = await import('@/services/supabase/supabaseClient');
+          const { data: { session } } = await supabase.auth.getSession();
+          
+          if (session?.access_token) {
+            const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+            if (supabaseUrl) {
+              const response = await fetch(`${supabaseUrl}/functions/v1/validate-profile`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  user_id: user.id,
+                  validation_run_id: validationRunId,
+                }),
+              });
+
+              if (!response.ok) {
+                console.error('[PhotosScreen] Validation job failed:', await response.text());
+              } else {
+                console.log('[PhotosScreen] Validation job completed:', await response.json());
+              }
+            }
+          }
+        } catch (error) {
+          console.error('[PhotosScreen] Failed to trigger validation job:', error);
+        }
+      } else {
+        // During onboarding, mark as submitted (though this shouldn't happen if isCorrectiveAction logic is correct)
+        markSubmitted(user.id, 'photos').catch((error) => {
+          console.error('[PhotosScreen] Failed to mark photos as submitted:', error);
+        });
+      }
+
+      // Navigate to feed page
+      router.replace('/(tabs)');
+    } catch (error) {
+      console.error('[PhotosScreen] Failed to submit photos:', error);
+    }
   };
 
   return (
     <ScreenContainer>
-      <ProgressBar
-        currentStep={3}
-        totalSteps={4}
-        stepTitles={['Your Pack', 'Little about you', 'Photos', 'Preferences']}
-      />
+      {/* Only show progress bar during onboarding */}
+      {!isCorrectiveAction && (
+        <ProgressBar
+          currentStep={3}
+          totalSteps={4}
+          stepTitles={['Your Pack', 'Little about you', 'Photos', 'Preferences']}
+        />
+      )}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.content}
@@ -208,18 +315,24 @@ export default function PhotosScreen() {
       >
         <View style={styles.header}>
           <View style={styles.headerTop}>
-            <TouchableOpacity
-              onPress={() => router.push('/(profile)/human')}
-              style={styles.backButton}
-            >
-              <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
-            </TouchableOpacity>
+            {/* Only show back button during onboarding */}
+            {!isCorrectiveAction && (
+              <TouchableOpacity
+                onPress={() => router.push('/(profile)/human')}
+                style={styles.backButton}
+              >
+                <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            )}
           </View>
           <AppText variant="heading" style={styles.title}>
             Add Photos
           </AppText>
           <AppText variant="body" style={styles.subtitle}>
-            Upload photos of yourself and your dogs
+            {isCorrectiveAction 
+              ? 'Please fix your photos to continue'
+              : 'Upload photos of yourself and your dogs'
+            }
           </AppText>
         </View>
 
@@ -263,11 +376,11 @@ export default function PhotosScreen() {
         <View style={styles.buttonContainer}>
           <AppButton 
             variant="primary" 
-            onPress={handleContinue} 
+            onPress={isCorrectiveAction ? handleSubmit : handleContinue} 
             style={styles.button}
-            disabled={!canContinue}
+            disabled={!canSubmit}
           >
-            Continue
+            {isCorrectiveAction ? 'Submit' : 'Continue'}
           </AppButton>
         </View>
       </ScrollView>
