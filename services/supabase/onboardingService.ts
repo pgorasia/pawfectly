@@ -102,12 +102,8 @@ export async function updateProfileData(
   location: Location | null
 ): Promise<void> {
   try {
-    // First get existing profile to preserve status
-    const { data: existingProfile } = await supabase
-      .from('profiles')
-      .select('status')
-      .eq('user_id', userId)
-      .single();
+    // Note: lifecycle_status and validation_status are managed by statusRepository
+    // No need to fetch existing profile - upsert will handle it
 
     // Save profile data (lifecycle_status and validation_status are managed by statusRepository)
     const profileData: any = {
@@ -190,11 +186,11 @@ export async function saveDogData(
 
     if (!existingProfile) {
       // Create minimal profile record if it doesn't exist
+      // lifecycle_status defaults to 'onboarding' and validation_status defaults to 'not_started'
       const { error: profileError } = await supabase
         .from('profiles')
         .insert({
           user_id: userId,
-          status: 'draft',
         });
 
       if (profileError) {
@@ -203,18 +199,7 @@ export async function saveDogData(
       }
     }
 
-    // Delete existing dogs for this user
-    const { error: deleteError } = await supabase
-      .from('dogs')
-      .delete()
-      .eq('user_id', userId);
-
-    if (deleteError) {
-      console.error('[OnboardingService] Failed to delete existing dogs:', deleteError);
-      // Continue anyway - might be first time
-    }
-
-    // Save dogs
+    // Upsert dogs by (user_id, slot) - only update existing, insert new, delete missing slots
     if (dogs.length > 0) {
       // Validate all dogs have required fields before saving
       const invalidDogs = dogs.filter((dog) => !dog.temperament);
@@ -235,13 +220,56 @@ export async function saveDogData(
         is_active: true,
       }));
 
-      const { error: dogsError } = await supabase
+      // Upsert dogs (insert or update based on unique index user_id + slot)
+      // Supabase will use the unique index idx_dogs_user_id_slot for conflict resolution
+      const { error: upsertError } = await supabase
         .from('dogs')
-        .insert(dogsData);
+        .upsert(dogsData, { onConflict: 'user_id,slot', ignoreDuplicates: false });
 
-      if (dogsError) {
-        console.error('[OnboardingService] Failed to save dogs:', dogsError);
-        throw new Error(`Failed to save dogs: ${dogsError.message}`);
+      if (upsertError) {
+        console.error('[OnboardingService] Failed to upsert dogs:', upsertError);
+        throw new Error(`Failed to save dogs: ${upsertError.message}`);
+      }
+
+      // Delete dogs for slots that are no longer present
+      // Only delete if we have fewer dogs than possible (max 3 slots)
+      const currentSlots = dogs.map(d => d.slot);
+      if (currentSlots.length < 3) {
+        // Get existing slots from database to find which ones to delete
+        const { data: existingDogs } = await supabase
+          .from('dogs')
+          .select('slot')
+          .eq('user_id', userId)
+          .eq('is_active', true);
+
+        if (existingDogs) {
+          const existingSlots = existingDogs.map(d => d.slot).filter((slot): slot is number => slot !== null);
+          const slotsToDelete = existingSlots.filter(slot => !currentSlots.includes(slot));
+
+          if (slotsToDelete.length > 0) {
+            const { error: deleteError } = await supabase
+              .from('dogs')
+              .delete()
+              .eq('user_id', userId)
+              .in('slot', slotsToDelete);
+
+            if (deleteError) {
+              console.error('[OnboardingService] Failed to delete removed dogs:', deleteError);
+              // Don't throw - this is cleanup, not critical
+            }
+          }
+        }
+      }
+    } else {
+      // If no dogs provided, delete all dogs for this user
+      const { error: deleteError } = await supabase
+        .from('dogs')
+        .delete()
+        .eq('user_id', userId);
+
+      if (deleteError) {
+        console.error('[OnboardingService] Failed to delete all dogs:', deleteError);
+        // Don't throw - might be first time
       }
     }
 
@@ -264,6 +292,7 @@ export async function saveHumanData(
 ): Promise<void> {
   try {
     // Save profile data
+    // lifecycle_status and validation_status are managed by statusRepository, not here
     const profileData: any = {
       user_id: userId,
       display_name: human.name || null,
@@ -272,7 +301,6 @@ export async function saveHumanData(
       city: location?.city || null,
       lat: location?.latitude || null,
       lng: location?.longitude || null,
-      status: 'draft',
     };
 
     const { error: profileError } = await supabase
@@ -305,6 +333,7 @@ export async function savePackData(
 ): Promise<void> {
   try {
     // Save profile data
+    // lifecycle_status and validation_status are managed by statusRepository, not here
     const profileData: any = {
       user_id: userId,
       display_name: human.name || null,
@@ -313,7 +342,6 @@ export async function savePackData(
       city: location?.city || null,
       lat: location?.latitude || null,
       lng: location?.longitude || null,
-      status: 'draft',
     };
 
     const { error: profileError } = await supabase
@@ -491,7 +519,8 @@ export async function savePreferencesData(
 }
 
 /**
- * Load user data from database
+ * @deprecated Use loadMe() from statusRepository instead. This function makes 4 wide select('*') calls.
+ * Kept for backwards compatibility during migration.
  */
 export async function loadUserData(userId: string): Promise<{
   profile: any;

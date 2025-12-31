@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -10,10 +10,10 @@ import { useProfileDraft, Gender } from '@/hooks/useProfileDraft';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMe } from '@/contexts/MeContext';
 import { searchLocation } from '@/services/geocoding/locationService';
 import { saveHumanData, setCurrentStep } from '@/services/supabase/onboardingService';
 import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
-import { supabase } from '@/services/supabase/supabaseClient';
 
 const GENDERS: { label: string; value: Gender }[] = [
   { label: 'Male', value: 'male' },
@@ -81,56 +81,121 @@ const is18Plus = (dateStr: string): boolean => {
 export default function HumanScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { draft, updateHuman, updateLocation } = useProfileDraft();
+  const { me } = useMe();
+  const { draft, updateHuman, updateLocation, loadFromDatabase } = useProfileDraft();
 
   // Set current step when page loads or when user navigates back to this screen
   // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
+  // Uses cached lifecycle_status from MeContext instead of DB query
   useFocusEffect(
     React.useCallback(() => {
       if (user?.id) {
-        // Check lifecycle_status before updating onboarding_status
-        supabase
-          .from('profiles')
-          .select('lifecycle_status')
-          .eq('user_id', user.id)
-          .maybeSingle()
-          .then(({ data: profile, error }) => {
-            if (error && error.code !== 'PGRST116') {
-              console.error('[HumanScreen] Failed to check lifecycle_status:', error);
-              return;
-            }
-            
-            // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
-            if (!profile || profile.lifecycle_status === 'onboarding') {
-              // First ensure the row exists, then set the step
-              getOrCreateOnboarding(user.id)
-                .then(() => setLastStep(user.id, 'human'))
-                .catch((error) => {
-                  console.error('[HumanScreen] Failed to set current step:', error);
-                });
-            } else {
-              console.log(
-                `[HumanScreen] Skipping onboarding_status update - lifecycle_status is '${profile.lifecycle_status}', not 'onboarding'`
-              );
-            }
-          });
+        // Use cached lifecycle_status from Me (already loaded)
+        const lifecycleStatus = me.profile?.lifecycle_status;
+        
+        // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
+        if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
+          // First ensure the row exists, then set the step
+          getOrCreateOnboarding(user.id)
+            .then(() => setLastStep(user.id, 'human'))
+            .catch((error) => {
+              console.error('[HumanScreen] Failed to set current step:', error);
+            });
+        } else {
+          console.log(
+            `[HumanScreen] Skipping onboarding_status update - lifecycle_status is '${lifecycleStatus}', not 'onboarding'`
+          );
+        }
       }
-    }, [user?.id])
+    }, [user?.id, me.profile?.lifecycle_status])
   );
-  const [name, setName] = useState(draft.human.name || '');
-  const [dateOfBirth, setDateOfBirth] = useState(draft.human.dateOfBirth || '');
-  const [gender, setGender] = useState<Gender | null>(draft.human.gender);
+
+  // Ensure human object is properly initialized
+  // Only initialize if draft.human is completely missing, not if it exists with empty values
+  // This prevents overwriting data that was loaded from the database
+  useEffect(() => {
+    if (!draft.human || typeof draft.human !== 'object') {
+      // Only initialize if we don't have a human object at all
+      // Don't overwrite if human exists but has empty values (might be from DB)
+      updateHuman({
+        name: '',
+        dateOfBirth: '',
+        gender: null,
+      });
+    }
+  }, [draft.human, updateHuman]);
+
+  // Re-hydrate draft from Me when screen comes into focus if draft is empty
+  // This handles the case where user navigates back to this screen after resuming onboarding
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user?.id && me.profile && (!draft.human?.name && !draft.human?.dateOfBirth && !draft.human?.gender)) {
+        // Draft human is empty, but me.profile has data - re-hydrate
+        const profileForDraft = {
+          user_id: me.profile.user_id,
+          display_name: me.profile.display_name || null,
+          dob: me.profile.dob || null,
+          gender: me.profile.gender || null,
+          city: me.profile.city || null,
+          lat: me.profile.lat || null,
+          lng: me.profile.lng || null,
+          lifecycle_status: me.profile.lifecycle_status,
+          validation_status: me.profile.validation_status,
+        };
+
+        const dogsForDraft = me.dogs.map((dog) => ({
+          id: dog.id,
+          slot: dog.slot,
+          name: dog.name,
+          age_group: dog.ageGroup,
+          breed: dog.breed || null,
+          size: dog.size,
+          energy: dog.energy,
+          play_styles: dog.playStyles || [],
+          temperament: dog.temperament,
+          is_active: true,
+        }));
+
+        const preferencesForDraft = me.connectionStyles.length > 0 || (me.preferences['pawsome-pals'] || me.preferences['pawfect-match'])
+          ? {
+              pals_enabled: me.connectionStyles.includes('pawsome-pals'),
+              match_enabled: me.connectionStyles.includes('pawfect-match'),
+              pals_preferred_genders: me.preferences['pawsome-pals']?.preferredGenders || [],
+              pals_age_min: me.preferences['pawsome-pals']?.ageRange.min || null,
+              pals_age_max: me.preferences['pawsome-pals']?.ageRange.max || null,
+              pals_distance_miles: me.preferences['pawsome-pals']?.distance || 25,
+              match_preferred_genders: me.preferences['pawfect-match']?.preferredGenders || [],
+              match_age_min: me.preferences['pawfect-match']?.ageRange.min || null,
+              match_age_max: me.preferences['pawfect-match']?.ageRange.max || null,
+              match_distance_miles: me.preferences['pawfect-match']?.distance || 25,
+            }
+          : null;
+
+        loadFromDatabase({
+          profile: profileForDraft,
+          dogs: dogsForDraft,
+          preferences: preferencesForDraft,
+        });
+      }
+    }, [user?.id, me, draft.human, loadFromDatabase])
+  );
+
+  // Bind directly to draft
+  const name = draft.human?.name || '';
+  const dateOfBirth = draft.human?.dateOfBirth || '';
+  const gender = draft.human?.gender || null;
+  const locationFromGPS = draft.location?.useCurrentLocation || false;
+  const city = draft.location?.city || '';
+  
   const [dateError, setDateError] = useState('');
   const [showGenderDropdown, setShowGenderDropdown] = useState(false);
-  const [locationFromGPS, setLocationFromGPS] = useState(draft.location?.useCurrentLocation || false);
-  const [city, setCity] = useState(draft.location?.city || '');
   const [citySuggestions, setCitySuggestions] = useState<{ name: string; fullAddress: string }[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
 
   const handleDateChange = (text: string) => {
     const formatted = formatDateInput(text);
-    setDateOfBirth(formatted);
+    updateHuman({ dateOfBirth: formatted });
     
     if (formatted.length === 10) {
       if (!isValidDate(formatted)) {
@@ -148,14 +213,22 @@ export default function HumanScreen() {
   const handleUseCurrentLocation = () => {
     // Stub: set fake location - in production, this would use actual GPS
     const detectedCity = 'San Francisco, CA'; // This would come from reverse geocoding
-    setCity(detectedCity); // Populate the city field
-    setLocationFromGPS(true); // Mark as GPS location
+    updateLocation({
+      useCurrentLocation: true,
+      city: detectedCity,
+      latitude: 37.7749, // Fake SF coordinates - in production, use actual GPS
+      longitude: -122.4194,
+    });
     setShowSuggestions(false);
   };
 
   const handleCityChange = async (text: string) => {
-    setCity(text);
-    setLocationFromGPS(false); // User typing means it's not from GPS
+    updateLocation({
+      useCurrentLocation: false,
+      city: text,
+      latitude: undefined,
+      longitude: undefined,
+    });
     
     if (text.trim().length < 2) {
       setCitySuggestions([]);
@@ -178,20 +251,20 @@ export default function HumanScreen() {
   };
 
   const selectCity = (selectedCity: { name: string; fullAddress: string }) => {
-    setCity(selectedCity.fullAddress);
+    updateLocation({
+      useCurrentLocation: false,
+      city: selectedCity.fullAddress,
+      latitude: undefined,
+      longitude: undefined,
+    });
     setShowSuggestions(false);
   };
 
   const handleContinue = () => {
     if (dateError) return;
     
-    updateHuman({
-      name,
-      dateOfBirth,
-      gender,
-    });
-
-    // Update location - save city from GPS or manual entry
+    // Draft is already updated via onChange handlers, so we can proceed
+    // Update location if needed - save city from GPS or manual entry
     const cityToSave = city.trim();
     
     const locationData = {
@@ -272,7 +345,7 @@ export default function HumanScreen() {
             <TextInput
               style={styles.input}
               value={name}
-              onChangeText={setName}
+              onChangeText={(text) => updateHuman({ name: text })}
               placeholder="Enter your name"
             />
           </View>
@@ -330,7 +403,7 @@ export default function HumanScreen() {
                         gender === option.value && styles.dropdownOptionSelected,
                       ]}
                       onPress={() => {
-                        setGender(option.value);
+                        updateHuman({ gender: option.value });
                         setShowGenderDropdown(false);
                       }}
                     >

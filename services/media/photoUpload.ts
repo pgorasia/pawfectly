@@ -13,7 +13,6 @@
 
 import { pickImage } from './imagePicker';
 import { resizeAndUploadPhoto } from './resizeAndUploadPhoto';
-import { supabase } from '../supabase/supabaseClient';
 import { getCurrentUserId } from '../supabase/photoService';
 import type { Photo, BucketType } from '@/types/photo';
 
@@ -75,7 +74,7 @@ export async function uploadPhotoWithValidation(
     const userId = await getCurrentUserId();
 
     // Step 3: Resize, upload to Storage, and create photo record
-    // resizeAndUploadPhoto already creates the DB record, so we don't need createPhotoRecord
+    // resizeAndUploadPhoto already creates the DB record and returns the full photo object
     const uploadResult = await resizeAndUploadPhoto({
       localUri: pickedImage.uri,
       croppedUri, // Use cropped image if provided
@@ -85,24 +84,14 @@ export async function uploadPhotoWithValidation(
       mimeType: pickedImage.type || 'image/jpeg',
     });
 
-    // Step 4: Fetch the newly created photo record
-    const { data: photo, error: fetchError } = await supabase
-      .from('photos')
-      .select('*')
-      .eq('id', uploadResult.photoRowId)
-      .single();
-
-    if (fetchError || !photo) {
-      throw new Error(`Failed to fetch newly created photo record: ${fetchError?.message}`);
-    }
-
-    // Step 5: Validation is now triggered automatically by DB webhook on INSERT
+    // Step 4: Validation is now triggered automatically by DB webhook on INSERT
     // No need to manually trigger - the webhook will call the edge function
-    console.log(`[PhotoUpload] ✅ Photo ${photo.id} uploaded. Validation will be triggered automatically by webhook.`);
+    // display_order is automatically set by database trigger (see migration 025)
+    console.log(`[PhotoUpload] ✅ Photo ${uploadResult.photo.id} uploaded. Validation will be triggered automatically by webhook.`);
 
     return {
       success: true,
-      photo,
+      photo: uploadResult.photo,
     };
   } catch (error) {
     console.error('[PhotoUpload] Upload failed:', error);

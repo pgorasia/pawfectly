@@ -14,6 +14,7 @@ import { manipulateAsync, SaveFormat, Action } from 'expo-image-manipulator';
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../supabase/supabaseClient';
+import type { Photo } from '@/types/photo';
 
 export interface ResizeAndUploadPhotoParams {
   userId: string;
@@ -29,7 +30,7 @@ export interface ResizeAndUploadPhotoParams {
 }
 
 export interface ResizeAndUploadPhotoResult {
-  photoRowId: string;
+  photo: Photo;
   storagePath: string;
   width: number;
   height: number;
@@ -236,30 +237,9 @@ export async function resizeAndUploadPhoto(
     const storagePath = generateStoragePath(userId, bucketType, effectiveDogSlot);
     console.log(`[resizeAndUploadPhoto] Uploading to path: ${storagePath}`);
 
-    // Step 7: Verify we have a valid session before uploading
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError) {
-      console.error('[resizeAndUploadPhoto] Session error:', sessionError);
-      throw new Error(`Failed to verify session: ${sessionError.message}`);
-    }
-    if (!session) {
-      throw new Error('No active session. Please sign in again.');
-    }
-    console.log(`[resizeAndUploadPhoto] Session verified, user: ${session.user.id}`);
-    
-    // Check Supabase URL is accessible (basic connectivity check)
-    try {
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      if (!supabaseUrl) {
-        throw new Error('EXPO_PUBLIC_SUPABASE_URL is not set');
-      }
-      console.log(`[resizeAndUploadPhoto] Supabase URL configured: ${supabaseUrl.substring(0, 30)}...`);
-    } catch (configError) {
-      console.error('[resizeAndUploadPhoto] Configuration error:', configError);
-      throw new Error('Supabase configuration error. Please check your environment variables.');
-    }
-
-    // Step 8: Upload to Supabase Storage
+    // Step 7: Upload to Supabase Storage
+    // Note: Session/auth is managed globally via AuthContext. Supabase client automatically includes auth headers.
+    // If session is invalid, the upload will fail with a clear error message.
     console.log(`[resizeAndUploadPhoto] Starting upload to bucket: ${BUCKET_NAME}`);
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from(BUCKET_NAME)
@@ -309,7 +289,7 @@ export async function resizeAndUploadPhoto(
     }
 
     return {
-      photoRowId: photo.id,
+      photo,
       storagePath,
       width: finalWidth,
       height: finalHeight,

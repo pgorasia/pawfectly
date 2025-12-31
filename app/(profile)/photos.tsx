@@ -5,7 +5,7 @@
 
 import React, { useMemo } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { ProgressBar } from '@/components/common/ProgressBar';
@@ -18,8 +18,9 @@ import { useCropperModal } from '@/hooks/useCropperModal';
 import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { usePhotoBuckets } from '@/hooks/usePhotoBuckets';
 import { useAuth } from '@/contexts/AuthContext';
-import { setCurrentStep } from '@/services/supabase/onboardingService';
-import { markSubmitted, setLastStep, getOrCreateOnboarding, startValidation } from '@/services/profile/statusRepository';
+import { useMe } from '@/contexts/MeContext';
+import { setCurrentStep, dbDogToDogProfile } from '@/services/supabase/onboardingService';
+import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
 import { pickImage } from '@/services/media/imagePicker';
 import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
 import { cropImage } from '@/services/media/cropImage';
@@ -32,61 +33,76 @@ import { Colors } from '@/constants/colors';
 export default function PhotosScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { me } = useMe();
   const { draft } = useProfileDraft();
-  const [isCorrectiveAction, setIsCorrectiveAction] = React.useState(false);
-  const [lifecycleStatus, setLifecycleStatus] = React.useState<string | null>(null);
 
   // Cropper modal hook
   const { isOpen, imageUri, openCropper, closeCropper, handleConfirm } = useCropperModal();
 
-  // Check profile lifecycle_status and validation_status to determine if this is corrective action
+  const { loadFromDatabase } = useProfileDraft();
+
+  // Load dogs from database if draft is empty (especially important for corrective action)
   React.useEffect(() => {
-    const checkProfileStatus = async () => {
-      if (!user?.id) return;
+    const loadDogsIfNeeded = async () => {
+      if (!user?.id || draft.dogs.length > 0) return;
       
       try {
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('lifecycle_status, validation_status')
+        // Load dogs from database
+        const { data: dogs, error } = await supabase
+          .from('dogs')
+          .select('*')
           .eq('user_id', user.id)
-          .maybeSingle();
+          .eq('is_active', true)
+          .order('slot', { ascending: true });
         
-        if (error && error.code !== 'PGRST116') {
-          console.error('[PhotosScreen] Failed to check profile status:', error);
+        if (error) {
+          console.error('[PhotosScreen] Failed to load dogs:', error);
           return;
         }
         
-        const status = profile?.lifecycle_status;
-        const validationStatus = profile?.validation_status;
-        setLifecycleStatus(status || null);
-        
-        // Determine if this is corrective action (not onboarding)
-        const isCorrective = status && 
-          (status === 'pending_review' || status === 'limited' || status === 'blocked') &&
-          (validationStatus === 'failed_requirements' || validationStatus === 'failed_photos');
-        
-        setIsCorrectiveAction(isCorrective || false);
-        
-        // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist - new user)
-        if (!profile || profile.lifecycle_status === 'onboarding') {
-          // First ensure the row exists, then set the step
-          getOrCreateOnboarding(user.id)
-            .then(() => setLastStep(user.id, 'photos'))
-            .catch((error) => {
-              console.error('[PhotosScreen] Failed to set current step:', error);
-            });
-        } else {
-          console.log(
-            `[PhotosScreen] Skipping onboarding_status update - lifecycle_status is '${status}', not 'onboarding'`
-          );
+        if (dogs && dogs.length > 0) {
+          // Load dogs into draft context (loadFromDatabase handles conversion)
+          loadFromDatabase({
+            profile: null,
+            dogs: dogs,
+            preferences: null,
+          });
         }
       } catch (error) {
-        console.error('[PhotosScreen] Failed to check profile status:', error);
+        console.error('[PhotosScreen] Failed to load dogs:', error);
       }
     };
 
-    checkProfileStatus();
-  }, [user?.id]);
+    loadDogsIfNeeded();
+  }, [user?.id, draft.dogs.length, loadFromDatabase]);
+
+  // Compute corrective action status from cached values in MeContext
+  const lifecycleStatus = me.profile?.lifecycle_status;
+  const validationStatus = me.profile?.validation_status;
+  const isCorrectiveAction = lifecycleStatus && 
+    (lifecycleStatus === 'pending_review' || lifecycleStatus === 'limited' || lifecycleStatus === 'blocked') &&
+    (validationStatus === 'failed_requirements' || validationStatus === 'failed_photos');
+
+  // Set current step when page loads or when user navigates back to this screen
+  // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist - new user)
+  // Uses cached lifecycle_status from MeContext instead of DB query
+  React.useEffect(() => {
+    if (!user?.id) return;
+    
+    // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist - new user)
+    if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
+      // First ensure the row exists, then set the step
+      getOrCreateOnboarding(user.id)
+        .then(() => setLastStep(user.id, 'photos'))
+        .catch((error) => {
+          console.error('[PhotosScreen] Failed to set current step:', error);
+        });
+    } else {
+      console.log(
+        `[PhotosScreen] Skipping onboarding_status update - lifecycle_status is '${lifecycleStatus}', not 'onboarding'`
+      );
+    }
+  }, [user?.id, lifecycleStatus]);
 
   // Use slot numbers (1, 2, 3) for dog photos
   const dogSlots = useMemo(() => {
@@ -100,21 +116,7 @@ export default function PhotosScreen() {
     removePhoto,
     replacePhoto,
     hasHumanDogPhoto,
-    reorderPhotos,
-    savePendingReordersIfNeeded,
   } = usePhotoBuckets(dogSlots);
-
-  // Save pending reorders when user leaves this screen
-  useFocusEffect(
-    React.useCallback(() => {
-      return () => {
-        // On blur (user leaving screen) - save pending reorders
-        savePendingReordersIfNeeded().catch((err: unknown) => {
-          console.warn('[PhotosScreen] Failed to save pending reorders on screen switch:', err);
-        });
-      };
-    }, [savePendingReordersIfNeeded])
-  );
 
   // Store pending upload info for after cropper confirms
   const pendingUploadRef = React.useRef<{
@@ -236,9 +238,9 @@ export default function PhotosScreen() {
   const handleContinue = () => {
     if (!canSubmit || !user?.id) return;
     
-    // Mark photos as submitted and advance to preferences step (only during onboarding)
+    // Mark onboarding step as submitted and advance to preferences step (only during onboarding)
     markSubmitted(user.id, 'photos').catch((error) => {
-      console.error('[PhotosScreen] Failed to mark photos as submitted:', error);
+      console.error('[PhotosScreen] Failed to mark onboarding step as submitted:', error);
       // Don't block navigation on error
     });
     
@@ -248,54 +250,19 @@ export default function PhotosScreen() {
   const handleSubmit = async () => {
     if (!canSubmit || !user?.id) return;
 
-    try {
-      // For corrective action (not onboarding), trigger validation again
-      if (isCorrectiveAction) {
-        // Start new validation process
-        const validationRunId = await startValidation(user.id);
-        
-        // Trigger profile validation edge function
-        try {
-          const { supabase } = await import('@/services/supabase/supabaseClient');
-          const { data: { session } } = await supabase.auth.getSession();
-          
-          if (session?.access_token) {
-            const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-            if (supabaseUrl) {
-              const response = await fetch(`${supabaseUrl}/functions/v1/validate-profile`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${session.access_token}`,
-                },
-                body: JSON.stringify({
-                  user_id: user.id,
-                  validation_run_id: validationRunId,
-                }),
-              });
-
-              if (!response.ok) {
-                console.error('[PhotosScreen] Validation job failed:', await response.text());
-              } else {
-                console.log('[PhotosScreen] Validation job completed:', await response.json());
-              }
-            }
-          }
-        } catch (error) {
-          console.error('[PhotosScreen] Failed to trigger validation job:', error);
-        }
-      } else {
-        // During onboarding, mark as submitted (though this shouldn't happen if isCorrectiveAction logic is correct)
-        markSubmitted(user.id, 'photos').catch((error) => {
-          console.error('[PhotosScreen] Failed to mark photos as submitted:', error);
-        });
+    // Onboarding submit: mark onboarding step as submitted, then route to feed
+    if (!isCorrectiveAction) {
+      try {
+        await markSubmitted(user.id, 'photos');
+      } catch (error) {
+        console.error('[PhotosScreen] Failed to mark onboarding step as submitted:', error);
+        // Don't block navigation on error
       }
-
-      // Navigate to feed page
-      router.replace('/(tabs)');
-    } catch (error) {
-      console.error('[PhotosScreen] Failed to submit photos:', error);
     }
+    // Corrective submit: no server calls, just route to feed immediately
+
+    // Navigate to feed
+    router.replace('/(tabs)');
   };
 
   return (
@@ -338,8 +305,12 @@ export default function PhotosScreen() {
 
         {/* Dog Photos - same order as dogs page */}
         {draft.dogs.map((dog) => {
-          const bucket = dogBuckets[dog.slot];
-          if (!bucket) return null;
+          // Use bucket if it exists, otherwise use empty bucket state
+          const bucket = dogBuckets[dog.slot] || {
+            photos: [],
+            isUploading: false,
+            uploadError: null,
+          };
 
           return (
             <DogPhotoBucket
@@ -350,7 +321,6 @@ export default function PhotosScreen() {
               onUpload={() => handleUploadWithCropper('dog', dog.slot)}
               onRemove={(photoId) => removePhoto(photoId, 'dog', dog.slot)}
               onReplace={(photoId) => handleReplaceWithCropper(photoId, 'dog', dog.slot)}
-              onReorder={(photoIds) => reorderPhotos(photoIds, 'dog', dog.slot)}
             />
           );
         })}
@@ -362,7 +332,6 @@ export default function PhotosScreen() {
           onRemove={(photoId) => removePhoto(photoId, 'human')}
           onReplace={(photoId) => handleReplaceWithCropper(photoId, 'human')}
           hasHumanDogPhoto={hasHumanDogPhoto}
-          onReorder={(photoIds) => reorderPhotos(photoIds, 'human')}
         />
 
         {/* Cropper Modal */}

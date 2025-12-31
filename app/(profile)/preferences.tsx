@@ -7,6 +7,7 @@ import { AppButton } from '@/components/ui/AppButton';
 import { Card } from '@/components/ui/Card';
 import { useProfileDraft, Gender, Preferences, ConnectionStyle } from '@/hooks/useProfileDraft';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMe } from '@/contexts/MeContext';
 import { updatePreferencesData } from '@/services/supabase/onboardingService';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
@@ -240,6 +241,7 @@ function PreferencesSection({
 export default function PreferencesScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { me, updateMe } = useMe();
   const { draft, updateConnectionStyles, updatePreferences } = useProfileDraft();
   const [selectedStyles, setSelectedStyles] = useState<ConnectionStyle[]>(
     draft.connectionStyles || []
@@ -261,6 +263,13 @@ export default function PreferencesScreen() {
     if (!user?.id) return;
 
     try {
+      // Update MeContext optimistically (server cache)
+      updateMe({
+        connectionStyles: selectedStyles,
+        preferences: draft.preferences,
+      });
+
+      // Save to database
       await updatePreferencesData(user.id, selectedStyles, draft.preferences);
       router.back();
     } catch (error) {

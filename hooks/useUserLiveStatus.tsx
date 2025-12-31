@@ -4,7 +4,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getCurrentUserLiveStatus } from '@/services/supabase/userService';
+import { isUserLive } from '@/services/supabase/userService';
 
 export interface UserLiveStatus {
   isLive: boolean | null; // null = loading
@@ -32,7 +32,7 @@ export function useUserLiveStatus(): UserLiveStatus {
     try {
       setIsLoading(true);
       setError(null);
-      const liveStatus = await getCurrentUserLiveStatus();
+      const liveStatus = await isUserLive(user.id);
       setIsLive(liveStatus);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to check live status';

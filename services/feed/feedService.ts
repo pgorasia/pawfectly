@@ -39,16 +39,27 @@ export interface FeedDog {
   energy: string;
 }
 
+export interface FeedCursor {
+  updated_at: string;
+  user_id: string;
+}
+
+export interface FeedResult {
+  profiles: FeedProfile[];
+  nextCursor: FeedCursor | null;
+}
+
 /**
  * Get feed profiles (only active/limited profiles with approved photos)
+ * Uses keyset/cursor pagination for better performance at scale
  */
 export async function getFeedProfiles(
   currentUserId: string,
   limit: number = 20,
-  offset: number = 0
-): Promise<FeedProfile[]> {
-  // Query profiles with lifecycle_status in ('active','limited')
-  const { data: profiles, error: profilesError } = await supabase
+  cursor: FeedCursor | null = null
+): Promise<FeedResult> {
+  // Build query with keyset pagination
+  let query = supabase
     .from('profiles')
     .select(`
       user_id,
@@ -57,12 +68,28 @@ export async function getFeedProfiles(
       lat,
       lng,
       lifecycle_status,
-      validation_status
+      validation_status,
+      updated_at
     `)
     .in('lifecycle_status', ['active', 'limited'])
-    .neq('user_id', currentUserId) // Exclude current user
+    .neq('user_id', currentUserId); // Exclude current user
+
+  // Apply cursor-based filtering for pagination
+  if (cursor) {
+    // Keyset pagination: get profiles where:
+    // - updated_at < cursor.updated_at, OR
+    // - (updated_at = cursor.updated_at AND user_id < cursor.user_id)
+    // This ensures consistent ordering and handles ties in updated_at
+    // Using PostgREST filter syntax for compound key comparison
+    const filter = `updated_at.lt.${cursor.updated_at},and(updated_at.eq.${cursor.updated_at},user_id.lt.${cursor.user_id})`;
+    query = query.or(filter);
+  }
+
+  // Order by updated_at DESC, then user_id DESC for consistent pagination
+  const { data: profiles, error: profilesError } = await query
     .order('updated_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+    .order('user_id', { ascending: false })
+    .limit(limit + 1); // Fetch one extra to determine if there's a next page
 
   if (profilesError) {
     console.error('[feedService] Failed to load profiles:', profilesError);
@@ -70,10 +97,24 @@ export async function getFeedProfiles(
   }
 
   if (!profiles || profiles.length === 0) {
-    return [];
+    return { profiles: [], nextCursor: null };
   }
 
-  const userIds = profiles.map((p) => p.user_id);
+  // Check if there's a next page (we fetched limit + 1)
+  const hasNextPage = profiles.length > limit;
+  const profilesToReturn = hasNextPage ? profiles.slice(0, limit) : profiles;
+
+  // Determine next cursor from the last item in the current page
+  // Only set cursor if there's a next page and we have results
+  const nextCursor: FeedCursor | null =
+    hasNextPage && profilesToReturn.length > 0
+      ? {
+          updated_at: profilesToReturn[profilesToReturn.length - 1].updated_at,
+          user_id: profilesToReturn[profilesToReturn.length - 1].user_id,
+        }
+      : null;
+
+  const userIds = profilesToReturn.map((p) => p.user_id);
 
   // Query approved photos for these profiles
   const { data: photos, error: photosError } = await supabase
@@ -134,7 +175,7 @@ export async function getFeedProfiles(
   });
 
   // Combine into feed profiles
-  return profiles.map((profile) => ({
+  const feedProfiles: FeedProfile[] = profilesToReturn.map((profile) => ({
     user_id: profile.user_id,
     display_name: profile.display_name,
     city: profile.city,
@@ -145,6 +186,11 @@ export async function getFeedProfiles(
     photos: photosByUser.get(profile.user_id) || [],
     dogs: dogsByUser.get(profile.user_id) || [],
   }));
+
+  return {
+    profiles: feedProfiles,
+    nextCursor,
+  };
 }
 
 /**

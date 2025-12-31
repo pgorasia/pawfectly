@@ -14,8 +14,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/services/supabase/supabaseClient';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
-import { getOnboardingState, loadUserData } from '@/services/supabase/onboardingService';
-import { useProfileDraft } from '@/hooks/useProfileDraft';
+import { loadMe } from '@/services/profile/statusRepository';
 
 // Complete OAuth session in browser
 WebBrowser.maybeCompleteAuthSession();
@@ -26,7 +25,6 @@ export default function AuthScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const { signIn, signUp } = useAuth();
-  const { loadFromDatabase } = useProfileDraft();
   const [mode, setMode] = useState<AuthMode>((params.mode as AuthMode) || 'signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -82,63 +80,17 @@ export default function AuthScreen() {
         try {
           const { data: { user } } = await supabase.auth.getUser();
           if (user?.id) {
-            // Load user data from database
-            const userData = await loadUserData(user.id);
-            
-            // Load data into draft context
-            if (userData.profile || userData.dogs.length > 0 || userData.preferences) {
-              loadFromDatabase({
-                profile: userData.profile,
-                dogs: userData.dogs,
-                preferences: userData.preferences,
-              });
-            }
+            // Load minimal "me" data for routing (optimized single RPC call)
+            const me = await loadMe();
 
             // Check if profile validation failed (needs corrective action)
             // If so, route to the page indicated by last_step (usually 'photos')
-            const validationStatus = userData.profile?.validation_status;
-            const lifecycleStatus = userData.profile?.lifecycle_status;
-            if (validationStatus === 'failed_photos' || validationStatus === 'failed_requirements' || 
-                lifecycleStatus === 'pending_review' || lifecycleStatus === 'limited') {
-              const onboardingState = userData.onboardingState;
-              if (onboardingState?.last_step) {
-                // Route to the page indicated by last_step (e.g., photos page)
-                switch (onboardingState.last_step) {
-                  case 'pack':
-                    router.replace('/(profile)/dogs');
-                    break;
-                  case 'human':
-                    router.replace('/(profile)/human');
-                    break;
-                  case 'photos':
-                    router.replace('/(profile)/photos');
-                    break;
-                  case 'preferences':
-                    router.replace('/(profile)/connection-style');
-                    break;
-                  default:
-                    // Default to photos page for failed validation
-                    router.replace('/(profile)/photos');
-                }
-              } else {
-                // No onboarding state, default to photos page
-                router.replace('/(profile)/photos');
-              }
-              return;
-            }
-
-            // Check onboarding state for normal flow
-            const onboardingState = userData.onboardingState;
             
-            if (!onboardingState) {
-              // New user - go to pack page
-              router.replace('/(profile)/dogs');
-            } else if (onboardingState.last_step === 'done') {
-              // Completed onboarding - go to feed
-              router.replace('/(tabs)');
-            } else {
-              // Route to the page indicated by last_step (current page user is on)
-              switch (onboardingState.last_step) {
+            const validationStatus = me.profile?.validation_status;
+
+            // 1) Resume onboarding if not completed
+            if (me.onboarding.last_step && me.onboarding.last_step !== 'done') {
+              switch (me.onboarding.last_step) {
                 case 'pack':
                   router.replace('/(profile)/dogs');
                   break;
@@ -152,10 +104,19 @@ export default function AuthScreen() {
                   router.replace('/(profile)/connection-style');
                   break;
                 default:
-                  // Fallback to dogs page
                   router.replace('/(profile)/dogs');
               }
+              return;
             }
+
+            // 2) Onboarding complete: corrective photos only when truly failed
+            if (validationStatus === 'failed_photos' || validationStatus === 'failed_requirements') {
+              router.replace('/(profile)/photos');
+              return;
+            }
+
+            // 3) in_progress / passed / not_started => allow app access
+            router.replace('/(tabs)');
           } else {
             router.replace('/(profile)/dogs');
           }

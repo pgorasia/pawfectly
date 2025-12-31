@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -11,10 +11,10 @@ import { useProfileDraft, DogProfile, AgeGroup, DogSize, EnergyLevel, PlayStyle,
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMe } from '@/contexts/MeContext';
 import { deletePhotosByDogSlot } from '@/services/supabase/photoService';
 import { saveDogData } from '@/services/supabase/onboardingService';
 import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
-import { supabase } from '@/services/supabase/supabaseClient';
 
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
   { label: 'Puppy (0-1 year)', value: 'puppy' },
@@ -367,62 +367,58 @@ function DogForm({
 export default function DogsScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { draft, updateDogs, updateHuman, updateLocation } = useProfileDraft();
+  const { me } = useMe();
+  const { draft, updateDogs, updateDog } = useProfileDraft();
 
   // Set current step when page loads or when user navigates back to this screen
   // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
+  // Uses cached lifecycle_status from MeContext instead of DB query
   useFocusEffect(
     React.useCallback(() => {
       if (user?.id) {
-        // Check lifecycle_status before updating onboarding_status
-        supabase
-          .from('profiles')
-          .select('lifecycle_status')
-          .eq('user_id', user.id)
-          .maybeSingle()
-          .then(({ data: profile, error }) => {
-            if (error && error.code !== 'PGRST116') {
-              console.error('[DogsScreen] Failed to check lifecycle_status:', error);
-              return;
-            }
-            
-            // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
-            if (!profile || profile.lifecycle_status === 'onboarding') {
-              // First ensure the row exists, then set the step
-              getOrCreateOnboarding(user.id)
-                .then(() => setLastStep(user.id, 'pack'))
-                .catch((error) => {
-                  console.error('[DogsScreen] Failed to set current step:', error);
-                });
-            } else {
-              console.log(
-                `[DogsScreen] Skipping onboarding_status update - lifecycle_status is '${profile.lifecycle_status}', not 'onboarding'`
-              );
-            }
-          });
+        // Use cached lifecycle_status from Me (already loaded)
+        const lifecycleStatus = me.profile?.lifecycle_status;
+        
+        // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
+        if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
+          // First ensure the row exists, then set the step
+          getOrCreateOnboarding(user.id)
+            .then(() => setLastStep(user.id, 'pack'))
+            .catch((error) => {
+              console.error('[DogsScreen] Failed to set current step:', error);
+            });
+        } else {
+          console.log(
+            `[DogsScreen] Skipping onboarding_status update - lifecycle_status is '${lifecycleStatus}', not 'onboarding'`
+          );
+        }
       }
-    }, [user?.id])
+    }, [user?.id, me.profile?.lifecycle_status])
   );
-  const [dogs, setDogs] = useState<DogProfile[]>(
-    draft.dogs.length > 0
-      ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
-          ...dog,
-          slot: dog.slot || (index + 1), // Ensure slot is set
-        }))
-      : [
-          {
-            id: `dog-${Date.now()}`,
-            slot: 1,
-            name: '',
-            ageGroup: null,
-            breed: '',
-            size: null,
-            energy: null,
-            playStyles: [],
-            temperament: null,
-          },
-        ]
-  );
+
+  // Ensure draft has at least one dog
+  useEffect(() => {
+    if (draft.dogs.length === 0) {
+      const defaultDog: DogProfile = {
+        id: `dog-${Date.now()}`,
+        slot: 1,
+        name: '',
+        ageGroup: null,
+        breed: '',
+        size: null,
+        energy: null,
+        playStyles: [],
+        temperament: null,
+      };
+      updateDogs([defaultDog]);
+    }
+  }, [draft.dogs.length, updateDogs]);
+
+  // Get dogs from draft
+  const dogs = draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
+    ...dog,
+    slot: dog.slot || (index + 1), // Ensure slot is set
+  }));
 
   const handleAddDog = () => {
     if (dogs.length >= MAX_DOGS) return;
@@ -448,7 +444,7 @@ export default function DogsScreen() {
       playStyles: [],
       temperament: null,
     };
-    setDogs([...dogs, newDog]);
+    updateDogs([...dogs, newDog]);
   };
 
   const handleRemoveDog = async (id: string) => {
@@ -465,18 +461,17 @@ export default function DogsScreen() {
       }
     }
 
-    // Remove dog from state
-    setDogs(dogs.filter((dog) => dog.id !== id));
+    // Remove dog from draft
+    updateDogs(dogs.filter((dog) => dog.id !== id));
   };
 
   const handleUpdateDog = (id: string, updates: Partial<DogProfile>) => {
-    setDogs(dogs.map((dog) => (dog.id === id ? { ...dog, ...updates } : dog)));
+    updateDog(id, updates);
   };
 
 
   const handleContinue = () => {
-    updateDogs(dogs);
-
+    // Draft is already updated via handleUpdateDog, so we can proceed
     // Save to database asynchronously (non-blocking) - fire-and-forget autosave
     if (user?.id) {
       // Save only dogs for now, human data will be saved on the human page

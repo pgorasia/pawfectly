@@ -1,8 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, FlatList } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
-import { useProfileDraft, ConnectionStyle } from '@/hooks/useProfileDraft';
+import { useMe } from '@/contexts/MeContext';
+import { useAuth } from '@/contexts/AuthContext';
+import { ConnectionStyle } from '@/hooks/useProfileDraft';
+import { supabase } from '@/services/supabase/supabaseClient';
+import { dbPreferencesToDraftPreferences } from '@/services/supabase/onboardingService';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 
@@ -112,7 +117,6 @@ function MessageItem({ message }: { message: Message }) {
 }
 
 function MessagesTab({ connectionStyle }: { connectionStyle: ConnectionStyle }) {
-  const { draft } = useProfileDraft();
   const isPawsome = connectionStyle === 'pawsome-pals';
   
   // Filter matches - only show those without an active chat
@@ -168,12 +172,63 @@ function MessagesTab({ connectionStyle }: { connectionStyle: ConnectionStyle }) 
 }
 
 export default function MessagesScreen() {
-  const { draft } = useProfileDraft();
-  const hasPawsomePals = draft.connectionStyles.includes('pawsome-pals');
-  const hasPawfectMatch = draft.connectionStyles.includes('pawfect-match');
+  const { me, updateMe } = useMe();
+  const { user } = useAuth();
+  const hasPawsomePals = me.connectionStyles.includes('pawsome-pals');
+  const hasPawfectMatch = me.connectionStyles.includes('pawfect-match');
   
   const [activeTab, setActiveTab] = useState<ConnectionStyle | null>(
     hasPawsomePals ? 'pawsome-pals' : hasPawfectMatch ? 'pawfect-match' : null
+  );
+
+  // Update activeTab when connection styles change
+  useEffect(() => {
+    if (hasPawsomePals) {
+      setActiveTab('pawsome-pals');
+    } else if (hasPawfectMatch) {
+      setActiveTab('pawfect-match');
+    } else {
+      setActiveTab(null);
+    }
+  }, [hasPawsomePals, hasPawfectMatch]);
+
+  // Reconciliation: Sync MeContext with database on focus to reflect latest preferences
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!user?.id) return;
+
+      const reconcilePreferences = async () => {
+        try {
+          // Fetch latest preferences from database
+          const { data: prefs, error } = await supabase
+            .from('preferences')
+            .select('*')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if (error && error.code !== 'PGRST116') {
+            console.error('[MessagesScreen] Failed to reconcile preferences:', error);
+            return;
+          }
+
+          if (prefs) {
+            // Convert DB format to Me format
+            const { connectionStyles, preferences: prefsData } = dbPreferencesToDraftPreferences(prefs);
+            
+            // Always update to ensure MeContext reflects latest DB state
+            // updateMe will handle efficient updates internally
+            updateMe({
+              connectionStyles,
+              preferences: prefsData,
+            });
+          }
+        } catch (error) {
+          console.error('[MessagesScreen] Error reconciling preferences:', error);
+        }
+      };
+
+      reconcilePreferences();
+    }, [user?.id, updateMe])
   );
 
   // If only one connection style, show it directly

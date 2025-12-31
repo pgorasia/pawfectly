@@ -25,6 +25,18 @@ serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  // Optional: lock down to internal callers (recommended once the server-driven pipeline is enabled)
+  const internalSecret = Deno.env.get('PAWFECTLY_INTERNAL_SECRET')
+  if (internalSecret) {
+    const provided = req.headers.get('x-pawfectly-secret')
+    if (provided !== internalSecret) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+  }
+
   try {
     // Parse request body
     const { user_id, validation_run_id } = await req.json()

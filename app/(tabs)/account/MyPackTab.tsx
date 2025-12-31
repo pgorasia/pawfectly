@@ -6,6 +6,7 @@ import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
 import { AppButton } from '@/components/ui/AppButton';
 import { useProfileDraft, DogProfile, AgeGroup, DogSize, EnergyLevel, PlayStyle, Temperament } from '@/hooks/useProfileDraft';
+import { useMe } from '@/contexts/MeContext';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
@@ -366,6 +367,7 @@ interface MyPackTabProps {
 export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
   const router = useRouter();
   const { user } = useAuth();
+  const { me, updateMe } = useMe();
   const { draft, updateDogs, updateHuman, updateLocation } = useProfileDraft();
   const [editMode, setEditMode] = useState<EditMode>('none');
   
@@ -381,21 +383,21 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
   const [isSearching, setIsSearching] = useState(false);
   const [locationFromGPS, setLocationFromGPS] = useState(false);
 
-  // Load initial data from draft
+  // Load initial data from Me (server cache) for edit mode initialization
   useEffect(() => {
-    const loadedDogs = draft.dogs.length > 0
-      ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
+    const loadedDogs = me.dogs.length > 0
+      ? me.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
           ...dog,
           slot: dog.slot || (index + 1),
         }))
       : [];
     setOriginalDogs(loadedDogs);
-  }, [draft]);
+  }, [me.dogs]);
 
-  // Enter edit mode
+  // Enter edit mode - initialize from Me (server cache)
   const handleEditDogs = () => {
-    const loadedDogs = draft.dogs.length > 0
-      ? draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
+    const loadedDogs = me.dogs.length > 0
+      ? me.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
           ...dog,
           slot: dog.slot || (index + 1),
         }))
@@ -406,9 +408,11 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
   };
 
   const handleEditHuman = () => {
-    setName(draft.human.name || '');
-    setCity(draft.location?.city || '');
-    setLocationFromGPS(draft.location?.useCurrentLocation || false);
+    // Convert Me profile to human format for edit
+    const humanName = me.profile?.display_name || '';
+    setName(humanName);
+    setCity(me.profile?.city || '');
+    setLocationFromGPS(!!(me.profile?.lat && me.profile?.lng));
     setEditMode('human');
   };
 
@@ -451,8 +455,11 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
     if (!user?.id || !validateDogs()) return;
 
     try {
-      // Update draft context
+      // Update draft context (for edit forms)
       updateDogs(dogs);
+      
+      // Update Me optimistically (server cache)
+      updateMe({ dogs });
       
       // Save to database
       await saveDogData(user.id, dogs);
@@ -476,24 +483,37 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
     if (!user?.id || !validateHuman()) return;
 
     try {
-      // Update draft context
+      // Update draft context (for edit forms)
       updateHuman({ name });
       updateLocation({
         useCurrentLocation: locationFromGPS,
         city: city.trim(),
-        latitude: locationFromGPS ? draft.location?.latitude : undefined,
-        longitude: locationFromGPS ? draft.location?.longitude : undefined,
+        latitude: locationFromGPS ? me.profile?.lat : undefined,
+        longitude: locationFromGPS ? me.profile?.lng : undefined,
       });
+
+      // Update Me optimistically (server cache)
+      if (me.profile) {
+        updateMe({
+          profile: {
+            ...me.profile,
+            display_name: name,
+            city: city.trim(),
+            lat: locationFromGPS ? me.profile.lat : null,
+            lng: locationFromGPS ? me.profile.lng : null,
+          },
+        });
+      }
 
       // Save to database
       await saveHumanData(
         user.id,
-        { name, dateOfBirth: draft.human.dateOfBirth, gender: draft.human.gender },
+        { name, dateOfBirth: me.profile?.dob || '', gender: me.profile?.gender || null },
         {
           useCurrentLocation: locationFromGPS,
           city: city.trim(),
-          latitude: locationFromGPS ? draft.location?.latitude : undefined,
-          longitude: locationFromGPS ? draft.location?.longitude : undefined,
+          latitude: locationFromGPS ? me.profile?.lat : undefined,
+          longitude: locationFromGPS ? me.profile?.lng : undefined,
         }
       );
 
@@ -605,12 +625,12 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
             </TouchableOpacity>
           </View>
           
-          {draft.dogs.length === 0 ? (
+          {me.dogs.length === 0 ? (
             <AppText variant="body" style={styles.emptyText}>
               No dogs added yet
             </AppText>
           ) : (
-            draft.dogs.map((dog) => (
+            me.dogs.map((dog) => (
               <Card key={dog.id} style={styles.dogCard}>
                 <AppText variant="heading" style={styles.dogName}>
                   {dog.name || 'Unnamed Dog'}
@@ -691,7 +711,7 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
                 Name
               </AppText>
               <AppText variant="body" style={styles.humanValue}>
-                {draft.human.name || 'Not set'}
+                {me.profile?.display_name || 'Not set'}
               </AppText>
             </View>
             <View style={styles.humanDetail}>
@@ -699,7 +719,7 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
                 Date of Birth
               </AppText>
               <AppText variant="body" style={styles.humanValue}>
-                {draft.human.dateOfBirth || 'Not set'}
+                {me.profile?.dob || 'Not set'}
               </AppText>
             </View>
             <View style={styles.humanDetail}>
@@ -707,8 +727,8 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
                 Gender
               </AppText>
               <AppText variant="body" style={styles.humanValue}>
-                {draft.human.gender 
-                  ? draft.human.gender.charAt(0).toUpperCase() + draft.human.gender.slice(1).replace(/-/g, ' ')
+                {me.profile?.gender 
+                  ? me.profile.gender.charAt(0).toUpperCase() + me.profile.gender.slice(1).replace(/-/g, ' ')
                   : 'Not set'}
               </AppText>
             </View>
@@ -717,7 +737,7 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
                 City
               </AppText>
               <AppText variant="body" style={styles.humanValue}>
-                {draft.location?.city || 'Not set'}
+                {me.profile?.city || 'Not set'}
               </AppText>
             </View>
           </Card>
@@ -826,7 +846,7 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
             </AppText>
             <View style={[editStyles.input, editStyles.disabledInput]}>
               <AppText variant="body" style={editStyles.disabledText}>
-                {draft.human.dateOfBirth || 'Not set'}
+                {me.profile?.dob || 'Not set'}
               </AppText>
             </View>
             <AppText variant="caption" style={editStyles.hint}>
@@ -840,8 +860,8 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
             </AppText>
             <View style={[editStyles.input, editStyles.disabledInput]}>
               <AppText variant="body" style={editStyles.disabledText}>
-                {draft.human.gender 
-                  ? draft.human.gender.charAt(0).toUpperCase() + draft.human.gender.slice(1).replace(/-/g, ' ')
+                {me.profile?.gender 
+                  ? me.profile.gender.charAt(0).toUpperCase() + me.profile.gender.slice(1).replace(/-/g, ' ')
                   : 'Not set'}
               </AppText>
             </View>

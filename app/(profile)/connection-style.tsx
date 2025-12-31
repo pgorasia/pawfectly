@@ -11,9 +11,9 @@ import { useProfileDraft, ConnectionStyle, Gender, Preferences } from '@/hooks/u
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMe } from '@/contexts/MeContext';
 import { savePreferencesData, setCurrentStep, updateOnboardingState } from '@/services/supabase/onboardingService';
-import { markSubmitted, startValidation, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
-import { supabase } from '@/services/supabase/supabaseClient';
+import { markSubmitted, setLastStep, getOrCreateOnboarding, loadMe } from '@/services/profile/statusRepository';
 
 const CONNECTION_STYLES: {
   emoji: string;
@@ -244,51 +244,41 @@ function PreferencesSection({
 export default function ConnectionStyleScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { draft, updateConnectionStyles, updatePreferences } = useProfileDraft();
-  const [selectedStyles, setSelectedStyles] = useState<ConnectionStyle[]>(
-    draft.connectionStyles || []
-  );
+  const { me, loadFromDatabase: loadMeFromDatabase } = useMe();
+  const { draft, updateConnectionStyles, updatePreferences, loadFromDatabase } = useProfileDraft();
+  // Bind directly to draft
+  const selectedStyles = draft.connectionStyles || [];
 
   // Set current step when page loads or when user navigates back to this screen
   // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
+  // Uses cached lifecycle_status from MeContext instead of DB query
   useFocusEffect(
     React.useCallback(() => {
       if (user?.id) {
-        // Check lifecycle_status before updating onboarding_status
-        supabase
-          .from('profiles')
-          .select('lifecycle_status')
-          .eq('user_id', user.id)
-          .maybeSingle()
-          .then(({ data: profile, error }) => {
-            if (error && error.code !== 'PGRST116') {
-              console.error('[ConnectionStyleScreen] Failed to check lifecycle_status:', error);
-              return;
-            }
-            
-            // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
-            if (!profile || profile.lifecycle_status === 'onboarding') {
-              // First ensure the row exists, then set the step
-              getOrCreateOnboarding(user.id)
-                .then(() => setLastStep(user.id, 'preferences'))
-                .catch((error) => {
-                  console.error('[ConnectionStyleScreen] Failed to set current step:', error);
-                });
-            } else {
-              console.log(
-                `[ConnectionStyleScreen] Skipping onboarding_status update - lifecycle_status is '${profile.lifecycle_status}', not 'onboarding'`
-              );
-            }
-          });
+        // Use cached lifecycle_status from Me (already loaded)
+        const lifecycleStatus = me.profile?.lifecycle_status;
+        
+        // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
+        if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
+          // First ensure the row exists, then set the step
+          getOrCreateOnboarding(user.id)
+            .then(() => setLastStep(user.id, 'preferences'))
+            .catch((error) => {
+              console.error('[ConnectionStyleScreen] Failed to set current step:', error);
+            });
+        } else {
+          console.log(
+            `[ConnectionStyleScreen] Skipping onboarding_status update - lifecycle_status is '${lifecycleStatus}', not 'onboarding'`
+          );
+        }
       }
-    }, [user?.id])
+    }, [user?.id, me.profile?.lifecycle_status])
   );
 
   const toggleStyle = (style: ConnectionStyle) => {
     const newStyles = selectedStyles.includes(style)
       ? selectedStyles.filter((s) => s !== style)
       : [...selectedStyles, style];
-    setSelectedStyles(newStyles);
     updateConnectionStyles(newStyles);
   };
 
@@ -309,42 +299,25 @@ export default function ConnectionStyleScreen() {
       // Mark preferences as submitted (sets last_step='done')
       await markSubmitted(user.id, 'preferences');
 
-      // Start validation process (sets profile to pending_review/in_progress and returns runId)
-      const validationRunId = await startValidation(user.id);
-
-      // Trigger profile validation edge function
-      // This validates all photos and calls applyValidationResult with runId guard
+      // Reload MeContext and DraftContext from DB to ensure Account tabs have latest data
+      // This is necessary because onboarding just saved data but contexts weren't updated
       try {
-        const { supabase } = await import('@/services/supabase/supabaseClient');
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (session?.access_token) {
-          const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-          if (!supabaseUrl) {
-            console.error('[ConnectionStyleScreen] EXPO_PUBLIC_SUPABASE_URL not set');
-          } else {
-            const response = await fetch(`${supabaseUrl}/functions/v1/validate-profile`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session.access_token}`,
-              },
-              body: JSON.stringify({
-                user_id: user.id,
-                validation_run_id: validationRunId,
-              }),
-            });
-
-            if (!response.ok) {
-              console.error('[ConnectionStyleScreen] Validation job failed:', await response.text());
-            } else {
-              console.log('[ConnectionStyleScreen] Validation job completed:', await response.json());
-            }
-          }
-        }
+        const refreshedMe = await loadMe();
+        // Update MeContext (server cache)
+        loadMeFromDatabase({
+          profile: refreshedMe.profile,
+          dogs: refreshedMe.dogs,
+          preferences: refreshedMe.preferences,
+        });
+        // Update DraftContext (for Account tabs that read from draft)
+        loadFromDatabase({
+          profile: refreshedMe.profile,
+          dogs: refreshedMe.dogs,
+          preferences: refreshedMe.preferences,
+        });
       } catch (error) {
-        console.error('[ConnectionStyleScreen] Failed to trigger validation job:', error);
-        // Don't block navigation - validation can run asynchronously
+        console.error('[ConnectionStyleScreen] Failed to reload MeContext after onboarding:', error);
+        // Don't block navigation - contexts will refresh on next login
       }
 
       // Route user to /(tabs) immediately (user can still access app while pending review)

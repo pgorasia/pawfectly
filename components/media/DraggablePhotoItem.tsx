@@ -4,7 +4,8 @@
  */
 
 import React, { useCallback } from 'react';
-import { View, StyleSheet, Image, TouchableOpacity, Dimensions } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import { Image } from 'expo-image';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useAnimatedStyle,
@@ -124,7 +125,13 @@ export const DraggablePhotoItem: React.FC<DraggablePhotoItemProps> = ({
           style={styles.photoTouchable}
         >
           {imageUrl ? (
-            <Image source={{ uri: imageUrl }} style={styles.photo} />
+            <Image 
+              source={{ uri: imageUrl }} 
+              style={styles.photo}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              transition={200}
+            />
           ) : (
             <View style={styles.photoPlaceholder}>
               <Ionicons name="image-outline" size={24} color={Colors.text} />
@@ -167,7 +174,6 @@ const styles = StyleSheet.create({
   photo: {
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
   },
   photoPlaceholder: {
     width: '100%',

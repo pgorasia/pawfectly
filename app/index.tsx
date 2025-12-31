@@ -1,8 +1,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
-import { loadBootstrap, getOrCreateOnboarding } from '@/services/profile/statusRepository';
-import { useProfileDraft } from '@/hooks/useProfileDraft';
+import { loadMe } from '@/services/profile/statusRepository';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { AppText } from '@/components/ui/AppText';
 import { Colors } from '@/constants/colors';
@@ -11,7 +10,6 @@ import { Spacing } from '@/constants/spacing';
 export default function Index() {
   const router = useRouter();
   const { user, initializing } = useAuth();
-  const { loadFromDatabase } = useProfileDraft();
 
   useEffect(() => {
     if (initializing) return;
@@ -24,27 +22,12 @@ export default function Index() {
       }
 
       try {
-        // Load bootstrap data (profile, onboarding, draft)
-        const bootstrap = await loadBootstrap(user.id);
-        
-        // Ensure onboarding_status row exists
-        await getOrCreateOnboarding(user.id);
-        
-        // Load data into draft context
-        if (bootstrap.draft.profile || bootstrap.draft.dogs.length > 0 || bootstrap.draft.preferences) {
-          loadFromDatabase({
-            profile: bootstrap.draft.profile,
-            dogs: bootstrap.draft.dogs,
-            preferences: bootstrap.draft.preferences,
-          });
-        }
-
-        const profile = bootstrap.profile;
-        const onboarding = bootstrap.onboarding;
+        // Load minimal "me" data for routing (optimized single RPC call)
+        const me = await loadMe();
 
         // Routing logic:
         // 1. If profile.lifecycle_status is 'active' => route to feed
-        if (profile?.lifecycle_status === 'active') {
+        if (me.profile?.lifecycle_status === 'active') {
           router.replace('/(tabs)');
           return;
         }
@@ -52,20 +35,22 @@ export default function Index() {
         // 2. Else (onboarding, pending_review, or limited):
         //    - If last_step is 'done' => route to Photos (corrective action)
         //    - Else => route to onboarding_status.last_step
-        if (!onboarding) {
-          // New user - go to pack page
-          router.replace('/(profile)/dogs');
-          return;
-        }
-
-        if (onboarding.last_step === 'done') {
-          // Route to Photos (only corrective action users can take)
-          router.replace('/(profile)/photos');
-          return;
-        }
+        
+if (me.onboarding.last_step === 'done') {
+  // Onboarding complete. Route based on server-authoritative validation state.
+  const validationStatus = me.profile?.validation_status;
+  if (validationStatus === 'failed_photos' || validationStatus === 'failed_requirements') {
+    // Action needed (corrective photo requirements)
+    router.replace('/(profile)/photos');
+  } else {
+    // in_progress / passed / not_started => allow app access (show banner if desired)
+    router.replace('/(tabs)');
+  }
+  return;
+}
 
         // Route to onboarding.last_step
-        switch (onboarding.last_step) {
+        switch (me.onboarding.last_step) {
           case 'pack':
             router.replace('/(profile)/dogs');
             break;
@@ -90,7 +75,7 @@ export default function Index() {
     };
 
     checkOnboardingAndRoute();
-  }, [user, initializing, router, loadFromDatabase]);
+  }, [user, initializing, router]);
 
   // Show loading while checking auth state
   if (initializing) {

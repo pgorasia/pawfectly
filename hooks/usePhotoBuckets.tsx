@@ -8,8 +8,6 @@ import {
   getDogPhotos,
   getHumanPhotos,
   deletePhoto,
-  updatePhotoDisplayOrder,
-  getNextDisplayOrder,
   reorderPhotosAfterDeletion,
 } from '@/services/supabase/photoService';
 import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
@@ -39,8 +37,6 @@ export interface UsePhotoBucketsReturn {
   replacePhoto: (photoId: string, bucketType: BucketType, dogSlot?: number) => Promise<void>;
   hasHumanDogPhoto: boolean;
   refreshPhotos: () => Promise<void>;
-  reorderPhotos: (photoIds: string[], bucketType: BucketType, dogSlot?: number) => void;
-  savePendingReordersIfNeeded: () => Promise<void>;
 }
 
 /**
@@ -56,9 +52,6 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     uploadError: null,
   });
   const [hasHumanDogPhoto, setHasHumanDogPhoto] = useState(false);
-  
-  // Track pending reorder operations (photoIds that need display_order updated)
-  const pendingReordersRef = useRef<Map<string, { photoIds: string[]; bucketType: BucketType; dogSlot?: number }>>(new Map());
 
   // Initialize dog buckets
   useEffect(() => {
@@ -211,25 +204,15 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           return;
         }
 
-        // Set display_order to the end (get next display_order)
-        let nextDisplayOrder: number | null = null;
-        if (user?.id) {
-          nextDisplayOrder = await getNextDisplayOrder(user.id, bucketType, dogSlot);
-          await supabase
-            .from('photos')
-            .update({ display_order: nextDisplayOrder })
-            .eq('id', result.photo!.id);
-        }
-
-        // Update photo object with display_order
-        const photoWithOrder = { ...result.photo!, display_order: nextDisplayOrder };
+        // display_order is automatically set by database trigger (see migration 025)
+        // No need to fetch next order or update - it's already set in result.photo
 
         // Upload successful - update state with new photo (at the end)
         if (bucketType === 'dog' && dogSlot) {
           setDogBuckets((prev) => ({
             ...prev,
             [dogSlot]: {
-              photos: [...prev[dogSlot].photos, photoWithOrder],
+              photos: [...prev[dogSlot].photos, result.photo!],
               isUploading: false,
               uploadError: null,
             },
@@ -237,7 +220,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         } else {
           setHumanBucket((prev) => ({
             ...prev,
-            photos: [...prev.photos, photoWithOrder],
+            photos: [...prev.photos, result.photo!],
             isUploading: false,
             uploadError: null,
           }));
@@ -411,18 +394,9 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
           mimeType: pickedImage.type,
         });
 
-        // Step 7: Fetch the newly created photo record
-        const { data: photo, error: fetchError } = await supabase
-          .from('photos')
-          .select('*')
-          .eq('id', uploadResult.photoRowId)
-          .single();
-
-        if (fetchError || !photo) {
-          throw new Error(`Failed to fetch newly created photo record: ${fetchError?.message}`);
-        }
-
-        // Step 8: Preserve the display_order from the old photo
+        // Step 7: Preserve the display_order from the old photo
+        // Note: The trigger sets display_order automatically, but we want to preserve the old position
+        const photo = uploadResult.photo;
         if (preservedDisplayOrder !== null) {
           await supabase
             .from('photos')
@@ -500,104 +474,6 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     [user]
   );
 
-  // Reorder photos - saves to database on tab switch
-  const reorderPhotos = useCallback(
-    (photoIds: string[], bucketType: BucketType, dogSlot?: number) => {
-      if (!user?.id) return;
-
-      // Create a unique key for this bucket
-      const bucketKey = bucketType === 'dog' && dogSlot 
-        ? `dog_${dogSlot}` 
-        : 'human';
-
-      // Store pending reorder (will be saved on tab switch)
-      pendingReordersRef.current.set(bucketKey, { photoIds, bucketType, dogSlot });
-
-      // Update local state immediately for responsive UI
-      if (bucketType === 'dog' && dogSlot) {
-        setDogBuckets((prev) => {
-          const currentPhotos = prev[dogSlot]?.photos || [];
-          const photoMap = new Map(currentPhotos.map(p => [p.id, p]));
-          const reorderedPhotos = photoIds
-            .map(id => photoMap.get(id))
-            .filter((p): p is Photo => p !== undefined);
-          
-          // Add any photos not in the reorder list at the end
-          const remainingPhotos = currentPhotos.filter(p => !photoIds.includes(p.id));
-          
-          return {
-            ...prev,
-            [dogSlot]: {
-              ...prev[dogSlot],
-              photos: [...reorderedPhotos, ...remainingPhotos],
-            },
-          };
-        });
-      } else {
-        setHumanBucket((prev) => {
-          const photoMap = new Map(prev.photos.map(p => [p.id, p]));
-          const reorderedPhotos = photoIds
-            .map(id => photoMap.get(id))
-            .filter((p): p is Photo => p !== undefined);
-          
-          // Add any photos not in the reorder list at the end
-          const remainingPhotos = prev.photos.filter(p => !photoIds.includes(p.id));
-          
-          return {
-            ...prev,
-            photos: [...reorderedPhotos, ...remainingPhotos],
-          };
-        });
-      }
-
-      console.log(`[usePhotoBuckets] Photo order updated locally, will save on tab switch`);
-    },
-    [user]
-  );
-
-  // Save pending reorders to database
-  const savePendingReorders = useCallback(async () => {
-    if (!user?.id || pendingReordersRef.current.size === 0) {
-      return;
-    }
-
-    try {
-      console.log('[usePhotoBuckets] Saving pending reorders to database', {
-        pendingCount: pendingReordersRef.current.size,
-      });
-      
-      // Collect all photo orders from pending reorders
-      const allPhotoOrders: Array<{ photoId: string; displayOrder: number }> = [];
-      
-      for (const [key, { photoIds }] of pendingReordersRef.current.entries()) {
-        photoIds.forEach((photoId, index) => {
-          allPhotoOrders.push({
-            photoId,
-            displayOrder: index + 1,
-          });
-        });
-      }
-
-      if (allPhotoOrders.length > 0) {
-        await updatePhotoDisplayOrder(allPhotoOrders);
-        console.log(`[usePhotoBuckets] ✅ Saved ${allPhotoOrders.length} photo order(s) to database`);
-        
-        // Clear pending reorders after successful save
-        pendingReordersRef.current.clear();
-      }
-    } catch (error) {
-      console.error('[usePhotoBuckets] Failed to save pending reorders:', error);
-      throw error;
-    }
-  }, [user?.id]);
-
-  // Expose function to save pending reorders (called on tab switch)
-  const savePendingReordersIfNeeded = useCallback(async () => {
-    if (pendingReordersRef.current.size > 0) {
-      await savePendingReorders();
-    }
-  }, [savePendingReorders]);
-
   return {
     dogBuckets,
     humanBucket,
@@ -606,8 +482,6 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     replacePhoto,
     hasHumanDogPhoto,
     refreshPhotos,
-    reorderPhotos,
-    savePendingReordersIfNeeded,
   };
 }
 

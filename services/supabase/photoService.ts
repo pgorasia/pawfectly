@@ -143,39 +143,33 @@ export async function getHumanPhotos(userId: string): Promise<Photo[]> {
  * Deletes a photo (both storage and database record)
  */
 export async function deletePhoto(photoId: string, userId: string): Promise<void> {
-  // Get photo record first to get storage path
-  const { data: photo, error: fetchError } = await supabase
+  // Delete database record and get storage_path in one call
+  const { data: deletedPhoto, error: dbError } = await supabase
     .from('photos')
-    .select('storage_path')
+    .delete()
     .eq('id', photoId)
     .eq('user_id', userId)
+    .select('storage_path')
     .single();
 
-  if (fetchError || !photo) {
-    throw new Error(`Photo not found: ${fetchError?.message}`);
+  if (dbError) {
+    throw new Error(`Failed to delete photo record: ${dbError.message}`);
   }
 
-  // Delete from storage
+  if (!deletedPhoto) {
+    throw new Error('Photo not found');
+  }
+
+  // Delete from storage using the path from deleted record
   const { error: storageError } = await supabase.storage
     .from('photos')
-    .remove([photo.storage_path]);
+    .remove([deletedPhoto.storage_path]);
 
   if (storageError) {
     // Don't throw if bucket doesn't exist (might be in cleanup scenario)
     if (!storageError.message.includes('not found') && !storageError.message.includes('Bucket not found')) {
       console.warn(`Failed to delete from storage: ${storageError.message}`);
     }
-  }
-
-  // Delete database record
-  const { error: dbError } = await supabase
-    .from('photos')
-    .delete()
-    .eq('id', photoId)
-    .eq('user_id', userId);
-
-  if (dbError) {
-    throw new Error(`Failed to delete photo record: ${dbError.message}`);
   }
 }
 

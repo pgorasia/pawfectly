@@ -60,6 +60,7 @@ export interface ProfileDraft {
 
 interface ProfileDraftContextType {
   draft: ProfileDraft;
+  draftHydrated: boolean;
   updateDogs: (dogs: DogProfile[]) => void;
   addDog: (dog: DogProfile) => void;
   updateDog: (id: string, updates: Partial<DogProfile>) => void;
@@ -94,6 +95,7 @@ const ProfileDraftContext = createContext<ProfileDraftContextType | undefined>(u
 
 export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [draft, setDraft] = useState<ProfileDraft>(defaultDraft);
+  const [draftHydrated, setDraftHydrated] = useState(false);
 
   const updateDogs = (dogs: DogProfile[]) => {
     setDraft((prev) => ({ ...prev, dogs }));
@@ -180,16 +182,19 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
     }
 
     setDraft(newDraft);
+    setDraftHydrated(true);
   };
 
   const reset = () => {
     setDraft(defaultDraft);
+    setDraftHydrated(false);
   };
 
   return (
     <ProfileDraftContext.Provider
       value={{
         draft,
+        draftHydrated,
         updateDogs,
         addDog,
         updateDog,

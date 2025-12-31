@@ -12,6 +12,18 @@ serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
+  // Optional: lock down to internal callers (recommended once the server-driven pipeline is enabled)
+  const internalSecret = Deno.env.get('PAWFECTLY_INTERNAL_SECRET')
+  if (internalSecret) {
+    const provided = req.headers.get('x-pawfectly-secret')
+    if (provided !== internalSecret) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+  }
+
   try {
     // 1. Parse the webhook payload (triggered by DB INSERT on photos table)
     const payload = await req.json()

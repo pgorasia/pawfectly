@@ -21,16 +21,3 @@ export async function isUserLive(userId: string): Promise<boolean> {
   return data === true;
 }
 
-/**
- * Gets live status for current authenticated user
- */
-export async function getCurrentUserLiveStatus(): Promise<boolean> {
-  const { data: { user } } = await supabase.auth.getUser();
-  
-  if (!user) {
-    throw new Error('User not authenticated');
-  }
-
-  return isUserLive(user.id);
-}
-

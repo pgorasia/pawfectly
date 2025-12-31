@@ -41,6 +41,33 @@ export interface BootstrapData {
 }
 
 /**
+ * Minimal "me" data for routing and initial rendering
+ * Uses optimized RPC function to fetch only needed fields
+ */
+export interface MeData {
+  onboarding: {
+    last_step: OnboardingStep;
+    dog_submitted: boolean;
+    human_submitted: boolean;
+    photos_submitted: boolean;
+    preferences_submitted: boolean;
+  };
+  profile: {
+    lifecycle_status: 'onboarding' | 'pending_review' | 'active' | 'limited' | 'blocked';
+    validation_status: 'not_started' | 'in_progress' | 'passed' | 'failed_requirements' | 'failed_photos';
+  } | null;
+  dogs: Array<{
+    slot: number;
+    name: string;
+    is_active: boolean;
+  }>;
+  preferences: {
+    pals_enabled: boolean;
+    match_enabled: boolean;
+  } | null;
+}
+
+/**
  * Get or create onboarding_status row with defaults if missing
  */
 export async function getOrCreateOnboarding(userId: string): Promise<OnboardingStatus> {
@@ -78,7 +105,37 @@ export async function getOrCreateOnboarding(userId: string): Promise<OnboardingS
 }
 
 /**
- * Load bootstrap data: profiles, onboarding_status, and draft data
+ * Load minimal "me" data for routing and initial rendering
+ * Uses optimized RPC function - single network call, minimal payload
+ */
+export async function loadMe(): Promise<MeData> {
+  const { data, error } = await supabase.rpc('load_me');
+
+  if (error) {
+    console.error('[statusRepository] Failed to load me data:', error);
+    throw new Error(`Failed to load me data: ${error.message}`);
+  }
+
+  // Ensure onboarding defaults if missing
+  const onboarding = data.onboarding || {
+    last_step: 'pack' as OnboardingStep,
+    dog_submitted: false,
+    human_submitted: false,
+    photos_submitted: false,
+    preferences_submitted: false,
+  };
+
+  return {
+    onboarding,
+    profile: data.profile || null,
+    dogs: data.dogs || [],
+    preferences: data.preferences || null,
+  };
+}
+
+/**
+ * @deprecated Use loadMe() instead. This function makes multiple wide select('*') calls.
+ * Kept for backwards compatibility during migration.
  */
 export async function loadBootstrap(userId: string): Promise<BootstrapData> {
   try {

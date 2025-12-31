@@ -5,14 +5,13 @@
 
 import React, { useMemo } from 'react';
 import { View, StyleSheet, ScrollView } from 'react-native';
-import { useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { DogPhotoBucket } from '@/components/dog/DogPhotoBucket';
 import { HumanPhotoBucket } from '@/components/human/HumanPhotoBucket';
 import { CropperModal } from '@/components/media/CropperModal';
 import { useCropperModal } from '@/hooks/useCropperModal';
-import { useProfileDraft } from '@/hooks/useProfileDraft';
+import { useMe } from '@/contexts/MeContext';
 import { usePhotoBuckets } from '@/hooks/usePhotoBuckets';
 import { useAuth } from '@/contexts/AuthContext';
 import { pickImage } from '@/services/media/imagePicker';
@@ -21,16 +20,16 @@ import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 
 export default function OurPhotosTab() {
-  const { draft } = useProfileDraft();
+  const { me } = useMe();
   const { user } = useAuth();
 
   // Cropper modal hook
   const { isOpen, imageUri, openCropper, closeCropper } = useCropperModal();
 
-  // Use slot numbers (1, 2, 3) for dog photos
+  // Use slot numbers (1, 2, 3) for dog photos from Me
   const dogSlots = useMemo(() => {
-    return draft.dogs.map(dog => dog.slot).filter(slot => slot >= 1 && slot <= 3);
-  }, [draft.dogs]);
+    return me.dogs.map(dog => dog.slot).filter(slot => slot >= 1 && slot <= 3);
+  }, [me.dogs]);
 
   const {
     dogBuckets,
@@ -39,30 +38,9 @@ export default function OurPhotosTab() {
     removePhoto,
     replacePhoto,
     hasHumanDogPhoto,
-    reorderPhotos,
-    savePendingReordersIfNeeded,
   } = usePhotoBuckets(dogSlots);
 
   // Save pending reorders when user leaves this tab
-  useFocusEffect(
-    React.useCallback(() => {
-      return () => {
-        // On blur (user leaving tab) - save pending reorders
-        savePendingReordersIfNeeded().catch((err: unknown) => {
-          console.warn('[OurPhotosTab] Failed to save pending reorders on tab switch:', err);
-        });
-      };
-    }, [savePendingReordersIfNeeded])
-  );
-
-  // Also save on component unmount (when switching to different tab in Account section)
-  React.useEffect(() => {
-    return () => {
-      savePendingReordersIfNeeded().catch((err: unknown) => {
-        console.warn('[OurPhotosTab] Failed to save pending reorders on unmount:', err);
-      });
-    };
-  }, [savePendingReordersIfNeeded]);
 
   // Store pending upload info for after cropper confirms
   const pendingUploadRef = React.useRef<{
@@ -173,8 +151,8 @@ export default function OurPhotosTab() {
         </AppText>
       </View>
 
-      {/* Dog Photos - same order as dogs page */}
-      {draft.dogs.map((dog) => {
+      {/* Dog Photos - same order as dogs from Me */}
+      {me.dogs.map((dog) => {
         const bucket = dogBuckets[dog.slot];
         if (!bucket) return null;
 
@@ -187,7 +165,6 @@ export default function OurPhotosTab() {
             onUpload={() => handleUploadWithCropper('dog', dog.slot)}
             onRemove={(photoId) => removePhoto(photoId, 'dog', dog.slot)}
             onReplace={(photoId) => handleReplaceWithCropper(photoId, 'dog', dog.slot)}
-            onReorder={(photoIds) => reorderPhotos(photoIds, 'dog', dog.slot)}
           />
         );
       })}
@@ -199,7 +176,6 @@ export default function OurPhotosTab() {
         onRemove={(photoId) => removePhoto(photoId, 'human')}
         onReplace={(photoId) => handleReplaceWithCropper(photoId, 'human')}
         hasHumanDogPhoto={hasHumanDogPhoto}
-        onReorder={(photoIds) => reorderPhotos(photoIds, 'human')}
       />
 
       {/* Cropper Modal */}
