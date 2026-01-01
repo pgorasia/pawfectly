@@ -5,13 +5,12 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
 import { AppButton } from '@/components/ui/AppButton';
-import { useProfileDraft, DogProfile, AgeGroup, DogSize, EnergyLevel, PlayStyle, Temperament } from '@/hooks/useProfileDraft';
+import { useProfileDraft, AgeGroup, DogSize, EnergyLevel, PlayStyle, Temperament } from '@/hooks/useProfileDraft';
 import { useMe } from '@/contexts/MeContext';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
-import { deletePhotosByDogSlot, getDogPhotos } from '@/services/supabase/photoService';
-import { updateProfileData, saveDogData, saveHumanData } from '@/services/supabase/onboardingService';
+import { saveHumanData } from '@/services/supabase/onboardingService';
 import { searchLocation } from '@/services/geocoding/locationService';
 
 // Import constants from dogs.tsx - we'll reuse them
@@ -49,316 +48,8 @@ const TEMPERAMENTS: { label: string; value: Temperament }[] = [
   { label: 'Reactive', value: 'reactive' },
 ];
 
-const BREEDS = [
-  'Labrador Retriever',
-  'Golden Retriever',
-  'German Shepherd',
-  'French Bulldog',
-  'Bulldog',
-  'Poodle',
-  'Beagle',
-  'Rottweiler',
-  'Yorkshire Terrier',
-  'Dachshund',
-  'Siberian Husky',
-  'Boxer',
-  'Great Dane',
-  'Shih Tzu',
-  'Border Collie',
-  'Australian Shepherd',
-  'Cocker Spaniel',
-  'Chihuahua',
-  'Pomeranian',
-  'Maltese',
-  'Boston Terrier',
-  'Havanese',
-  'Bernese Mountain Dog',
-  'Cavalier King Charles Spaniel',
-  'English Springer Spaniel',
-  'Labradoodle',
-  'Goldendoodle',
-  'Cockapoo',
-  'Maltipoo',
-  'Puggle',
-  'Schnoodle',
-  'Yorkipoo',
-  'Cavapoo',
-  'Bernedoodle',
-  'Aussiedoodle',
-  'Sheepadoodle',
-  'Pomsky',
-  'Chiweenie',
-  'Pomchi',
-  'Shihpoo',
-  'Other',
-];
 
-const MAX_DOGS = 3;
-
-type EditMode = 'none' | 'dogs' | 'human';
-
-// DogForm component for edit mode (reused from onboarding)
-function DogFormEdit({
-  dog,
-  onUpdate,
-  onRemove,
-  canRemove,
-}: {
-  dog: DogProfile;
-  onUpdate: (updates: Partial<DogProfile>) => void;
-  onRemove: () => void;
-  canRemove: boolean;
-}) {
-  const [showBreedModal, setShowBreedModal] = useState(false);
-  const [breedSearch, setBreedSearch] = useState('');
-
-  const filteredBreeds = BREEDS.filter((breed) =>
-    breed.toLowerCase().includes(breedSearch.toLowerCase())
-  );
-
-  const togglePlayStyle = (style: PlayStyle) => {
-    const current = dog.playStyles || [];
-    if (current.includes(style)) {
-      onUpdate({ playStyles: current.filter((s) => s !== style) });
-    } else if (current.length < 3) {
-      onUpdate({ playStyles: [...current, style] });
-    }
-  };
-
-  const selectTemperament = (temp: Temperament) => {
-    onUpdate({ temperament: temp });
-  };
-
-  const selectBreed = (breed: string) => {
-    onUpdate({ breed });
-    setShowBreedModal(false);
-    setBreedSearch('');
-  };
-
-  return (
-    <Card style={editStyles.dogCard}>
-      <View style={editStyles.dogHeader}>
-        <AppText variant="heading" style={editStyles.dogTitle}>
-          {dog.name || 'New Dog'}
-        </AppText>
-        {canRemove && (
-          <TouchableOpacity onPress={onRemove} style={editStyles.removeButton}>
-            <AppText variant="caption" color={Colors.accent}>
-              Remove
-            </AppText>
-          </TouchableOpacity>
-        )}
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Name *
-        </AppText>
-        <TextInput
-          style={editStyles.input}
-          value={dog.name}
-          onChangeText={(text) => onUpdate({ name: text })}
-          placeholder="Enter dog's name"
-        />
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Age Group *
-        </AppText>
-        <View style={editStyles.optionsRow}>
-          {AGE_GROUPS.map((group) => (
-            <TouchableOpacity
-              key={group.value}
-              style={[
-                editStyles.optionButton,
-                dog.ageGroup === group.value && editStyles.optionButtonSelected,
-              ]}
-              onPress={() => onUpdate({ ageGroup: group.value })}
-            >
-              <AppText
-                variant="caption"
-                color={dog.ageGroup === group.value ? 'background' : 'text'}
-              >
-                {group.label}
-              </AppText>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Breed *
-        </AppText>
-        <TouchableOpacity
-          style={editStyles.input}
-          onPress={() => setShowBreedModal(true)}
-        >
-          <AppText
-            variant="body"
-            color={dog.breed ? 'text' : Colors.text}
-            style={!dog.breed && editStyles.placeholder}
-          >
-            {dog.breed || 'Select breed'}
-          </AppText>
-        </TouchableOpacity>
-        <Modal
-          visible={showBreedModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowBreedModal(false)}
-        >
-          <View style={editStyles.modalOverlay}>
-            <View style={editStyles.modalContent}>
-              <View style={editStyles.modalHeader}>
-                <AppText variant="heading">Select Breed</AppText>
-                <TouchableOpacity onPress={() => setShowBreedModal(false)}>
-                  <AppText variant="body" color={Colors.primary}>Close</AppText>
-                </TouchableOpacity>
-              </View>
-              <TextInput
-                style={editStyles.searchInput}
-                placeholder="Search breeds..."
-                value={breedSearch}
-                onChangeText={setBreedSearch}
-              />
-              <ScrollView style={editStyles.breedList}>
-                {filteredBreeds.map((breed) => (
-                  <TouchableOpacity
-                    key={breed}
-                    style={[
-                      editStyles.breedItem,
-                      dog.breed === breed && editStyles.breedItemSelected,
-                    ]}
-                    onPress={() => selectBreed(breed)}
-                  >
-                    <AppText
-                      variant="body"
-                      color={dog.breed === breed ? 'background' : 'text'}
-                    >
-                      {breed}
-                    </AppText>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Size *
-        </AppText>
-        <View style={editStyles.optionsRow}>
-          {SIZES.map((size) => (
-            <TouchableOpacity
-              key={size.value}
-              style={[
-                editStyles.optionButton,
-                dog.size === size.value && editStyles.optionButtonSelected,
-              ]}
-              onPress={() => onUpdate({ size: size.value })}
-            >
-              <AppText
-                variant="caption"
-                color={dog.size === size.value ? 'background' : 'text'}
-              >
-                {size.label}
-              </AppText>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Energy Level *
-        </AppText>
-        <View style={editStyles.optionsRow}>
-          {ENERGY_LEVELS.map((level) => (
-            <TouchableOpacity
-              key={level.value}
-              style={[
-                editStyles.optionButton,
-                dog.energy === level.value && editStyles.optionButtonSelected,
-              ]}
-              onPress={() => onUpdate({ energy: level.value })}
-            >
-              <AppText
-                variant="caption"
-                color={dog.energy === level.value ? 'background' : 'text'}
-              >
-                {level.label}
-              </AppText>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Play Styles (select up to 3) *
-        </AppText>
-        <AppText variant="caption" style={editStyles.hint}>
-          {dog.playStyles?.length || 0} of 3 selected
-        </AppText>
-        <View style={editStyles.playStylesGrid}>
-          {PLAY_STYLES.map((style) => {
-            const isSelected = dog.playStyles?.includes(style.value) || false;
-            const isDisabled = !isSelected && (dog.playStyles?.length || 0) >= 3;
-            return (
-              <TouchableOpacity
-                key={style.value}
-                style={[
-                  editStyles.playStyleButton,
-                  isSelected && editStyles.playStyleButtonSelected,
-                  isDisabled && editStyles.playStyleButtonDisabled,
-                ]}
-                onPress={() => togglePlayStyle(style.value)}
-                disabled={isDisabled}
-              >
-                <AppText
-                  variant="caption"
-                  color={isSelected ? 'background' : 'text'}
-                  style={isDisabled && editStyles.disabledText}
-                >
-                  {style.label}
-                </AppText>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-
-      <View style={editStyles.field}>
-        <AppText variant="body" style={editStyles.label}>
-          Temperament *
-        </AppText>
-        <View style={editStyles.optionsRow}>
-          {TEMPERAMENTS.map((temp) => (
-            <TouchableOpacity
-              key={temp.value}
-              style={[
-                editStyles.optionButton,
-                dog.temperament === temp.value && editStyles.optionButtonSelected,
-              ]}
-              onPress={() => selectTemperament(temp.value)}
-            >
-              <AppText
-                variant="caption"
-                color={dog.temperament === temp.value ? 'background' : 'text'}
-              >
-                {temp.label}
-              </AppText>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-    </Card>
-  );
-}
+type EditMode = 'none' | 'human';
 
 interface MyPackTabProps {
   onNewDogAdded?: () => void;
@@ -368,14 +59,10 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
   const router = useRouter();
   const { user } = useAuth();
   const { me, updateMe } = useMe();
-  const { draft, updateDogs, updateHuman, updateLocation } = useProfileDraft();
+  const { updateHuman, updateLocation } = useProfileDraft();
   const [editMode, setEditMode] = useState<EditMode>('none');
   
-  // Store original data to compare for new dogs detection
-  const [originalDogs, setOriginalDogs] = useState<DogProfile[]>([]);
-  
-  // Edit mode state
-  const [dogs, setDogs] = useState<DogProfile[]>([]);
+  // Edit mode state for human
   const [name, setName] = useState('');
   const [city, setCity] = useState('');
   const [citySuggestions, setCitySuggestions] = useState<{ name: string; fullAddress: string }[]>([]);
@@ -383,28 +70,9 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
   const [isSearching, setIsSearching] = useState(false);
   const [locationFromGPS, setLocationFromGPS] = useState(false);
 
-  // Load initial data from Me (server cache) for edit mode initialization
-  useEffect(() => {
-    const loadedDogs = me.dogs.length > 0
-      ? me.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
-          ...dog,
-          slot: dog.slot || (index + 1),
-        }))
-      : [];
-    setOriginalDogs(loadedDogs);
-  }, [me.dogs]);
-
-  // Enter edit mode - initialize from Me (server cache)
+  // Navigate to edit pack page
   const handleEditDogs = () => {
-    const loadedDogs = me.dogs.length > 0
-      ? me.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
-          ...dog,
-          slot: dog.slot || (index + 1),
-        }))
-      : [];
-    setDogs(loadedDogs);
-    setOriginalDogs(loadedDogs);
-    setEditMode('dogs');
+    router.push('/(tabs)/account/edit-pack');
   };
 
   const handleEditHuman = () => {
@@ -418,65 +86,14 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
 
   const handleCancelEdit = () => {
     setEditMode('none');
-    setDogs([]);
     setName('');
     setCity('');
     setLocationFromGPS(false);
   };
 
   // Validation
-  const validateDogs = (): boolean => {
-    if (dogs.length === 0) return false;
-    return dogs.every((dog) => {
-      return (
-        dog.name.trim() &&
-        dog.ageGroup &&
-        dog.breed &&
-        dog.size &&
-        dog.energy &&
-        dog.playStyles.length > 0 &&
-        dog.temperament !== null
-      );
-    });
-  };
-
   const validateHuman = (): boolean => {
     return name.trim().length > 0;
-  };
-
-  // Check if new dogs were added (dogs with slots that weren't in original)
-  const hasNewDogs = (): boolean => {
-    const originalSlots = new Set(originalDogs.map(d => d.slot));
-    return dogs.some(dog => !originalSlots.has(dog.slot));
-  };
-
-  // Save handlers
-  const handleSaveDogs = async () => {
-    if (!user?.id || !validateDogs()) return;
-
-    try {
-      // Update draft context (for edit forms)
-      updateDogs(dogs);
-      
-      // Update Me optimistically (server cache)
-      updateMe({ dogs });
-      
-      // Save to database
-      await saveDogData(user.id, dogs);
-
-      // Exit edit mode
-      setEditMode('none');
-      
-      // Refresh the view by updating original dogs
-      setOriginalDogs(dogs);
-
-      // If new dogs were added, switch to photos tab
-      if (hasNewDogs() && onNewDogAdded) {
-        onNewDogAdded();
-      }
-    } catch (error) {
-      console.error('[MyPackTab] Failed to save dogs:', error);
-    }
   };
 
   const handleSaveHuman = async () => {
@@ -524,50 +141,6 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
     }
   };
 
-  const handleAddDog = () => {
-    if (dogs.length >= MAX_DOGS) return;
-    
-    const usedSlots = dogs.map(d => d.slot).filter(s => s >= 1 && s <= 3);
-    let newSlot = 1;
-    for (let i = 1; i <= 3; i++) {
-      if (!usedSlots.includes(i)) {
-        newSlot = i;
-        break;
-      }
-    }
-    
-    const newDog: DogProfile = {
-      id: `dog-${Date.now()}`,
-      slot: newSlot,
-      name: '',
-      ageGroup: null,
-      breed: '',
-      size: null,
-      energy: null,
-      playStyles: [],
-      temperament: null,
-    };
-    setDogs([...dogs, newDog]);
-  };
-
-  const handleRemoveDog = async (id: string) => {
-    const dogToRemove = dogs.find((dog) => dog.id === id);
-    if (!dogToRemove) return;
-
-    if (user?.id && dogToRemove.slot) {
-      try {
-        await deletePhotosByDogSlot(user.id, dogToRemove.slot);
-      } catch (error) {
-        console.error('Failed to delete photos for dog slot:', error);
-      }
-    }
-
-    setDogs(dogs.filter((dog) => dog.id !== id));
-  };
-
-  const handleUpdateDog = (id: string, updates: Partial<DogProfile>) => {
-    setDogs(dogs.map((dog) => (dog.id === id ? { ...dog, ...updates } : dog)));
-  };
 
   const handleCityChange = async (text: string) => {
     setCity(text);
@@ -743,66 +316,6 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
           </Card>
         </View>
       </ScrollView>
-    );
-  }
-
-  // Render edit mode for dogs
-  if (editMode === 'dogs') {
-    return (
-      <KeyboardAvoidingView
-        style={editStyles.keyboardAvoidingView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-      >
-        <ScrollView
-          contentContainerStyle={editStyles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={editStyles.header}>
-            <TouchableOpacity onPress={handleCancelEdit} style={editStyles.backButton}>
-              <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
-            </TouchableOpacity>
-            <AppText variant="heading" style={editStyles.title}>
-              Edit Your Pack
-            </AppText>
-          </View>
-
-          <View style={editStyles.dogsList}>
-            {dogs.map((dog) => (
-              <DogFormEdit
-                key={dog.id}
-                dog={dog}
-                onUpdate={(updates) => handleUpdateDog(dog.id, updates)}
-                onRemove={() => handleRemoveDog(dog.id)}
-                canRemove={dogs.length > 1}
-              />
-            ))}
-          </View>
-
-          {dogs.length < MAX_DOGS && (
-            <TouchableOpacity 
-              onPress={handleAddDog} 
-              style={editStyles.addButton}
-            >
-              <AppText variant="body" color={Colors.primary}>
-                + Add another dog
-              </AppText>
-            </TouchableOpacity>
-          )}
-
-          <View style={editStyles.buttonContainer}>
-            <AppButton
-              variant="primary"
-              onPress={handleSaveDogs}
-              disabled={!validateDogs()}
-              style={editStyles.button}
-            >
-              Save
-            </AppButton>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
     );
   }
 

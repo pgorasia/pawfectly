@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -106,7 +106,15 @@ function MyBadgesTab() {
 
 export default function AccountScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ tab?: string }>();
   const [activeTab, setActiveTab] = useState<AccountTab>('pack');
+
+  // Handle tab parameter from navigation
+  useEffect(() => {
+    if (params.tab && (params.tab === 'pack' || params.tab === 'photos' || params.tab === 'badges')) {
+      setActiveTab(params.tab as AccountTab);
+    }
+  }, [params.tab]);
 
   return (
     <ScreenContainer>
