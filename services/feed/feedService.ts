@@ -9,6 +9,31 @@
 
 import { supabase } from '../supabase/supabaseClient';
 
+/**
+ * Builds a public URL for a hero photo from Supabase Storage
+ * Returns null if bucket type or storage path is missing
+ * This is a pure function that does not make any database calls
+ * 
+ * Note: The actual storage bucket name is "photos" (not "human" or "dog").
+ * The bucket_type field is metadata indicating which type of photo it is.
+ */
+export function buildHeroPhotoUrl(
+  bucketType: string | null | undefined,
+  storagePath: string | null | undefined
+): string | null {
+  if (!storagePath) {
+    return null;
+  }
+
+  // The actual Supabase Storage bucket is always "photos"
+  // bucketType is just metadata (human/dog) but not the bucket name
+  const { data } = supabase.storage
+    .from('photos')
+    .getPublicUrl(storagePath);
+
+  return data?.publicUrl || null;
+}
+
 export interface FeedProfile {
   user_id: string;
   display_name: string | null;
@@ -214,3 +239,136 @@ export async function getCurrentUserStatus(userId: string): Promise<{
   return profile;
 }
 
+/**
+ * MVP Feed Service - Basic feed with swipe actions
+ */
+
+export interface FeedBasicCandidate {
+  candidate_id: string;
+  human_name: string | null;
+  city: string | null;
+  dog_name: string;
+  heroPhotoStoragePath?: string | null;
+  heroPhotoBucketType?: string | null;
+  heroPhotoId?: string | null;
+}
+
+export interface SubmitSwipeResult {
+  ok: boolean;
+  remaining_accepts?: number | null;
+  error?: 'daily_limit_reached' | 'invalid_action' | 'invalid_candidate';
+  limit?: number;
+  used?: number;
+}
+
+/**
+ * Get basic feed candidates using RPC function
+ * Returns candidates ready for swipe feed display
+ */
+export async function getFeedBasic(viewerId: string, limit: number = 20): Promise<FeedBasicCandidate[]> {
+  const { data, error } = await supabase.rpc('get_feed_basic', {
+    p_viewer_id: viewerId,
+    p_limit: limit,
+  });
+
+  if (error) {
+    console.error('[feedService] Failed to get feed basic:', error);
+    throw new Error(`Failed to get feed: ${error.message}`);
+  }
+
+  // Debug: Log the first row to see what fields are actually returned
+  if (data && data.length > 0) {
+    console.log('[feedService] Sample RPC response row:', JSON.stringify(data[0], null, 2));
+  }
+
+  return (data || []).map((row: any) => {
+    const mapped = {
+      candidate_id: row.candidate_id,
+      human_name: row.human_name,
+      city: row.city,
+      dog_name: row.dog_name || '',
+      // Try both snake_case and camelCase field names
+      heroPhotoStoragePath: row.hero_photo_storage_path ?? row.heroPhotoStoragePath ?? null,
+      heroPhotoBucketType: row.hero_photo_bucket_type ?? row.heroPhotoBucketType ?? null,
+      heroPhotoId: row.hero_photo_id ?? row.heroPhotoId ?? null,
+    };
+    
+    // Debug: Log if we found hero photo data
+    if (mapped.heroPhotoStoragePath || mapped.heroPhotoBucketType) {
+      console.log('[feedService] Found hero photo data:', {
+        storagePath: mapped.heroPhotoStoragePath,
+        bucketType: mapped.heroPhotoBucketType,
+        photoId: mapped.heroPhotoId,
+      });
+    }
+    
+    return mapped;
+  });
+}
+
+/**
+ * Submit a swipe action (reject, pass, or accept)
+ * Returns result with remaining accepts count or error
+ */
+export async function submitSwipe(
+  viewerId: string,
+  candidateId: string,
+  action: 'reject' | 'pass' | 'accept'
+): Promise<SubmitSwipeResult> {
+  const { data, error } = await supabase.rpc('submit_swipe', {
+    p_viewer_id: viewerId,
+    p_candidate_id: candidateId,
+    p_action: action,
+  });
+
+  if (error) {
+    console.error('[feedService] Failed to submit swipe:', error);
+    throw new Error(`Failed to submit swipe: ${error.message}`);
+  }
+
+  return data as SubmitSwipeResult;
+}
+
+/**
+ * Undo the last reject swipe (delete the most recent reject swipe)
+ * Uses RPC function with SECURITY DEFINER to bypass RLS
+ * Returns the candidate_id that was undone so UI can re-insert the card
+ */
+export async function undoSwipe(): Promise<string | null> {
+  const { data, error } = await supabase.rpc('undo_last_reject');
+
+  if (error) {
+    console.error('[feedService] Failed to undo swipe:', error);
+    throw new Error(`Failed to undo swipe: ${error.message}`);
+  }
+
+  if (!data?.ok) {
+    const errorMsg = data?.error ?? 'undo_failed';
+    console.error('[feedService] Undo failed:', errorMsg);
+    throw new Error(`Failed to undo swipe: ${errorMsg}`);
+  }
+
+  return data.candidate_id || null;
+}
+
+/**
+ * Undo the last pass swipe (delete the most recent pass swipe)
+ * Uses RPC function with SECURITY DEFINER to bypass RLS
+ * Returns the candidate_id that was undone so UI can re-insert the card
+ */
+export async function undoPassSwipe(): Promise<string | null> {
+  const { data, error } = await supabase.rpc('undo_last_pass');
+
+  if (error) {
+    console.error('[feedService] Failed to undo pass swipe:', error);
+    throw new Error(`Failed to undo pass swipe: ${error.message}`);
+  }
+
+  if (!data?.ok) {
+    const errorMsg = data?.error ?? 'undo_failed';
+    console.error('[feedService] Undo pass failed:', errorMsg);
+    throw new Error(`Failed to undo pass swipe: ${errorMsg}`);
+  }
+
+  return data.candidate_id ?? null;
+}

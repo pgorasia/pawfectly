@@ -13,7 +13,7 @@ import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { useMe } from '@/contexts/MeContext';
 import { savePreferencesData, setCurrentStep, updateOnboardingState } from '@/services/supabase/onboardingService';
-import { markSubmitted, setLastStep, getOrCreateOnboarding, loadMe } from '@/services/profile/statusRepository';
+import { markSubmitted, setLastStep, getOrCreateOnboarding, loadBootstrap } from '@/services/profile/statusRepository';
 
 const CONNECTION_STYLES: {
   emoji: string;
@@ -150,10 +150,6 @@ function PreferencesSection({
 
   return (
     <Card style={styles.preferenceCard}>
-      <AppText variant="heading" style={styles.sectionHeader}>
-        {CONNECTION_STYLE_LABELS[style]}
-      </AppText>
-
       <View style={styles.section}>
         <AppText variant="body" style={styles.sectionTitle}>
           Preferred Genders
@@ -241,6 +237,8 @@ function PreferencesSection({
   );
 }
 
+type PreferencesTab = 'pawsome-pals' | 'pawfect-match';
+
 export default function ConnectionStyleScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -248,6 +246,18 @@ export default function ConnectionStyleScreen() {
   const { draft, updateConnectionStyles, updatePreferences, loadFromDatabase } = useProfileDraft();
   // Bind directly to draft
   const selectedStyles = draft.connectionStyles || [];
+  const [activeTab, setActiveTab] = useState<PreferencesTab>('pawsome-pals');
+
+  // Set initial active tab based on selected styles
+  useEffect(() => {
+    if (selectedStyles.length > 0) {
+      if (selectedStyles.includes('pawsome-pals')) {
+        setActiveTab('pawsome-pals');
+      } else if (selectedStyles.includes('pawfect-match')) {
+        setActiveTab('pawfect-match');
+      }
+    }
+  }, [selectedStyles]);
 
   // Set current step when page loads or when user navigates back to this screen
   // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
@@ -301,19 +311,20 @@ export default function ConnectionStyleScreen() {
 
       // Reload MeContext and DraftContext from DB to ensure Account tabs have latest data
       // This is necessary because onboarding just saved data but contexts weren't updated
+      // Use loadBootstrap to get full "My Pack" data including prompts
       try {
-        const refreshedMe = await loadMe();
-        // Update MeContext (server cache)
+        const bootstrapData = await loadBootstrap(user.id);
+        // Update MeContext (server cache) with full data including prompts
         loadMeFromDatabase({
-          profile: refreshedMe.profile,
-          dogs: refreshedMe.dogs,
-          preferences: refreshedMe.preferences,
+          profile: bootstrapData.draft.profile,
+          dogs: bootstrapData.draft.dogs, // Dogs now include prompts via _prompts property
+          preferences: bootstrapData.draft.preferences,
         });
         // Update DraftContext (for Account tabs that read from draft)
         loadFromDatabase({
-          profile: refreshedMe.profile,
-          dogs: refreshedMe.dogs,
-          preferences: refreshedMe.preferences,
+          profile: bootstrapData.draft.profile,
+          dogs: bootstrapData.draft.dogs,
+          preferences: bootstrapData.draft.preferences,
         });
       } catch (error) {
         console.error('[ConnectionStyleScreen] Failed to reload MeContext after onboarding:', error);
@@ -410,20 +421,56 @@ export default function ConnectionStyleScreen() {
           </AppText>
         )}
 
-        {selectedStyles.includes('pawsome-pals') && (
-          <PreferencesSection
-            style="pawsome-pals"
-            preferences={draft.preferences['pawsome-pals']}
-            onUpdate={(prefs) => handleUpdatePreferences('pawsome-pals', prefs)}
-          />
-        )}
+        {/* Tabs for preferences */}
+        {selectedStyles.length > 0 && (
+          <View style={styles.tabsContainer}>
+            <View style={styles.tabBar}>
+              {selectedStyles.includes('pawsome-pals') && (
+                <TouchableOpacity
+                  style={[styles.tab, activeTab === 'pawsome-pals' && styles.tabActive]}
+                  onPress={() => setActiveTab('pawsome-pals')}
+                >
+                  <AppText
+                    variant="body"
+                    style={[styles.tabText, activeTab === 'pawsome-pals' && styles.tabTextActive]}
+                  >
+                    🐾 Pawsome Pals
+                  </AppText>
+                </TouchableOpacity>
+              )}
+              {selectedStyles.includes('pawfect-match') && (
+                <TouchableOpacity
+                  style={[styles.tab, activeTab === 'pawfect-match' && styles.tabActive]}
+                  onPress={() => setActiveTab('pawfect-match')}
+                >
+                  <AppText
+                    variant="body"
+                    style={[styles.tabText, activeTab === 'pawfect-match' && styles.tabTextActive]}
+                  >
+                    💛 Pawfect Match
+                  </AppText>
+                </TouchableOpacity>
+              )}
+            </View>
 
-        {selectedStyles.includes('pawfect-match') && (
-          <PreferencesSection
-            style="pawfect-match"
-            preferences={draft.preferences['pawfect-match']}
-            onUpdate={(prefs) => handleUpdatePreferences('pawfect-match', prefs)}
-          />
+            <View style={styles.tabContent}>
+              {activeTab === 'pawsome-pals' && selectedStyles.includes('pawsome-pals') && (
+                <PreferencesSection
+                  style="pawsome-pals"
+                  preferences={draft.preferences['pawsome-pals']}
+                  onUpdate={(prefs) => handleUpdatePreferences('pawsome-pals', prefs)}
+                />
+              )}
+
+              {activeTab === 'pawfect-match' && selectedStyles.includes('pawfect-match') && (
+                <PreferencesSection
+                  style="pawfect-match"
+                  preferences={draft.preferences['pawfect-match']}
+                  onUpdate={(prefs) => handleUpdatePreferences('pawfect-match', prefs)}
+                />
+              )}
+            </View>
+          </View>
         )}
 
         <View style={styles.buttonContainer}>
@@ -611,5 +658,35 @@ const styles = StyleSheet.create({
   },
   button: {
     width: '100%',
+  },
+  tabsContainer: {
+    marginTop: Spacing.lg,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+    marginBottom: Spacing.lg,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: Colors.primary,
+  },
+  tabText: {
+    opacity: 0.5,
+  },
+  tabTextActive: {
+    opacity: 1,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  tabContent: {
+    minHeight: 200,
   },
 });

@@ -71,6 +71,13 @@ export default function SettingsScreen() {
       disabled: true, // Will work on this later
     },
     {
+      id: 'blocked',
+      title: 'Blocked Users',
+      subtitle: 'View and manage blocked users',
+      type: 'navigation' as const,
+      onPress: () => router.push('/(tabs)/account/settings/blocked-users'),
+    },
+    {
       id: 'subscription',
       title: 'Subscription',
       subtitle: currentSubscription 

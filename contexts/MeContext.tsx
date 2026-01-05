@@ -98,9 +98,15 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       };
     }
 
-    // Load dogs
+    // Load dogs (with prompts attached from loadBootstrap)
     if (data.dogs && data.dogs.length > 0) {
-      newMe.dogs = data.dogs.map(dbDogToDogProfile);
+      newMe.dogs = data.dogs.map((dbDog: any) => {
+        // Extract prompts if attached by loadBootstrap
+        const prompts = dbDog._prompts || undefined;
+        // Remove _prompts from dbDog before conversion
+        const { _prompts, ...dogData } = dbDog;
+        return dbDogToDogProfile(dogData, prompts);
+      });
     }
 
     // Load preferences

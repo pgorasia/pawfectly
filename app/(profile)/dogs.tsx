@@ -15,6 +15,7 @@ import { useMe } from '@/contexts/MeContext';
 import { deletePhotosByDogSlot } from '@/services/supabase/photoService';
 import { saveDogData } from '@/services/supabase/onboardingService';
 import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
+import { DogPrompts } from '@/components/dog/DogPrompts';
 
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
   { label: 'Puppy (0-1 year)', value: 'puppy' },
@@ -360,6 +361,8 @@ function DogForm({
           ))}
         </View>
       </View>
+
+      <DogPrompts dog={dog} onUpdate={onUpdate} />
     </Card>
   );
 }

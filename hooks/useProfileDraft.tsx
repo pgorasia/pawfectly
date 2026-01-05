@@ -13,6 +13,12 @@ export type Temperament = 'calm' | 'playful' | 'reactive';
 export type Gender = 'male' | 'female' | 'trans' | 'non-binary' | 'prefer-not-to-say' | 'any';
 export type ConnectionStyle = 'pawsome-pals' | 'pawfect-match';
 
+export interface DogPrompt {
+  prompt_question_id: string;
+  answer_text: string;
+  display_order: number; // 1 or 2
+}
+
 export interface DogProfile {
   id: string;
   slot: number; // 1, 2, or 3 - stable slot identifier
@@ -23,6 +29,7 @@ export interface DogProfile {
   energy: EnergyLevel | null;
   playStyles: PlayStyle[];
   temperament: Temperament | null;
+  prompts?: DogPrompt[]; // Up to 2 prompts per dog
 }
 
 export interface HumanProfile {

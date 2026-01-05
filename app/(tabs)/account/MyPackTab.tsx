@@ -12,6 +12,7 @@ import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { saveHumanData } from '@/services/supabase/onboardingService';
 import { searchLocation } from '@/services/geocoding/locationService';
+import { DogPromptsDisplay } from '@/components/dog/DogPromptsDisplay';
 
 // Import constants from dogs.tsx - we'll reuse them
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
@@ -260,6 +261,7 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
                     </AppText>
                   </View>
                 </View>
+                <DogPromptsDisplay dog={dog} />
               </Card>
             ))
           )}

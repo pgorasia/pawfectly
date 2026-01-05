@@ -13,6 +13,8 @@ import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { deletePhotosByDogSlot } from '@/services/supabase/photoService';
 import { saveDogData } from '@/services/supabase/onboardingService';
+import { DogPrompts } from '@/components/dog/DogPrompts';
+import { getAllDogPromptAnswers } from '@/services/prompts/dogPromptService';
 
 // Import constants from dogs.tsx - we'll reuse them
 const AGE_GROUPS: { label: string; value: AgeGroup }[] = [
@@ -354,6 +356,8 @@ function DogFormEdit({
           ))}
         </View>
       </View>
+
+      <DogPrompts dog={dog} onUpdate={onUpdate} />
     </Card>
   );
 }
@@ -361,22 +365,75 @@ function DogFormEdit({
 export default function EditPackPage() {
   const router = useRouter();
   const { user } = useAuth();
-  const { me, updateMe } = useMe();
+  const { me, updateMe, meLoaded } = useMe();
   const { updateDogs } = useProfileDraft();
   const [dogs, setDogs] = useState<DogProfile[]>([]);
   const [originalDogs, setOriginalDogs] = useState<DogProfile[]>([]);
 
   // Load initial data from Me (server cache) for edit mode initialization
+  // Use prompts from me.dogs if available, otherwise fetch them
   useEffect(() => {
-    const loadedDogs = me.dogs.length > 0
-      ? me.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
-          ...dog,
-          slot: dog.slot || (index + 1),
-        }))
-      : [];
-    setDogs(loadedDogs);
-    setOriginalDogs(loadedDogs);
-  }, [me.dogs]);
+    const loadDogsWithPrompts = async () => {
+      if (me.dogs.length === 0) {
+        setDogs([]);
+        setOriginalDogs([]);
+        return;
+      }
+
+      const loadedDogs = me.dogs.slice(0, MAX_DOGS).map((dog, index) => ({
+        ...dog,
+        slot: dog.slot || (index + 1),
+      }));
+
+      // Check if prompts are already loaded in me.dogs
+      // If meLoaded is true and any dog has prompts as an array, we know loadBootstrap ran
+      // If meLoaded is false or no dogs have prompts, we need to fetch them
+      const hasLoadedPrompts = meLoaded && loadedDogs.some(dog => Array.isArray(dog.prompts));
+      
+      if (hasLoadedPrompts) {
+        // Prompts are already available from loadBootstrap, use them directly
+        setDogs(loadedDogs);
+        setOriginalDogs(loadedDogs);
+        return;
+      }
+
+      // Prompts not available yet, fetch them
+      if (user?.id) {
+        try {
+          const allPrompts = await getAllDogPromptAnswers(user.id);
+          
+          const dogsWithPrompts = loadedDogs.map(dog => {
+            // Use existing prompts if available, otherwise use fetched prompts
+            if (Array.isArray(dog.prompts)) {
+              return dog;
+            }
+            const prompts = allPrompts[dog.slot];
+            return {
+              ...dog,
+              prompts: prompts?.map(p => ({
+                prompt_question_id: p.prompt_question_id,
+                answer_text: p.answer_text,
+                display_order: p.display_order,
+              })),
+            };
+          });
+
+          setDogs(dogsWithPrompts);
+          setOriginalDogs(dogsWithPrompts);
+        } catch (error) {
+          console.error('[EditPackPage] Failed to load prompts:', error);
+          // Continue without prompts
+          setDogs(loadedDogs);
+          setOriginalDogs(loadedDogs);
+        }
+      } else {
+        setDogs(loadedDogs);
+        setOriginalDogs(loadedDogs);
+      }
+    };
+
+    loadDogsWithPrompts();
+  }, [me.dogs, meLoaded, user?.id]);
 
   // Validation
   const validateDogs = (): boolean => {

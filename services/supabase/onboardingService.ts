@@ -4,6 +4,7 @@
 
 import { supabase } from './supabaseClient';
 import type { DogProfile, HumanProfile, Location, Preferences, ConnectionStyle } from '@/hooks/useProfileDraft';
+import { saveDogPromptAnswers, getAllDogPromptAnswers } from '../prompts/dogPromptService';
 
 export type OnboardingStep = 'pack' | 'human' | 'photos' | 'preferences' | 'done';
 
@@ -231,6 +232,33 @@ export async function saveDogData(
         throw new Error(`Failed to save dogs: ${upsertError.message}`);
       }
 
+      // Save prompt answers for each dog
+      for (const dog of dogs) {
+        if (dog.prompts && dog.prompts.length > 0) {
+          try {
+            await saveDogPromptAnswers(userId, dog.slot, dog.prompts);
+          } catch (error) {
+            console.error(`[OnboardingService] Failed to save prompts for dog slot ${dog.slot}:`, error);
+            // Don't throw - prompts are optional
+          }
+        } else {
+          // If no prompts, ensure any existing prompts are deleted
+          try {
+            const { deleteError } = await supabase
+              .from('dog_prompt_answers')
+              .delete()
+              .eq('user_id', userId)
+              .eq('dog_slot', dog.slot);
+            
+            if (deleteError) {
+              console.error(`[OnboardingService] Failed to delete prompts for dog slot ${dog.slot}:`, deleteError);
+            }
+          } catch (error) {
+            console.error(`[OnboardingService] Error cleaning up prompts for dog slot ${dog.slot}:`, error);
+          }
+        }
+      }
+
       // Delete dogs for slots that are no longer present
       // Only delete if we have fewer dogs than possible (max 3 slots)
       const currentSlots = dogs.map(d => d.slot);
@@ -256,6 +284,23 @@ export async function saveDogData(
             if (deleteError) {
               console.error('[OnboardingService] Failed to delete removed dogs:', deleteError);
               // Don't throw - this is cleanup, not critical
+            }
+
+            // Also delete prompts for deleted dogs
+            for (const slot of slotsToDelete) {
+              try {
+                const { deleteError: promptDeleteError } = await supabase
+                  .from('dog_prompt_answers')
+                  .delete()
+                  .eq('user_id', userId)
+                  .eq('dog_slot', slot);
+                
+                if (promptDeleteError) {
+                  console.error(`[OnboardingService] Failed to delete prompts for deleted dog slot ${slot}:`, promptDeleteError);
+                }
+              } catch (error) {
+                console.error(`[OnboardingService] Error deleting prompts for slot ${slot}:`, error);
+              }
             }
           }
         }
@@ -579,8 +624,13 @@ export async function loadUserData(userId: string): Promise<{
 
 /**
  * Convert database dog to DogProfile format
+ * Note: Prompts are loaded separately and should be attached after calling this function
  */
-export function dbDogToDogProfile(dbDog: any): DogProfile {
+export function dbDogToDogProfile(dbDog: any, prompts?: Array<{
+  prompt_question_id: string;
+  answer_text: string;
+  display_order: number;
+}>): DogProfile {
   return {
     id: dbDog.id || `dog-${Date.now()}`,
     slot: dbDog.slot,
@@ -591,7 +641,51 @@ export function dbDogToDogProfile(dbDog: any): DogProfile {
     energy: dbDog.energy,
     playStyles: dbDog.play_styles || [],
     temperament: dbDog.temperament,
+    prompts: prompts && prompts.length > 0 ? prompts : undefined,
   };
+}
+
+/**
+ * Load dogs with their prompts from database
+ */
+export async function loadDogsWithPrompts(userId: string): Promise<DogProfile[]> {
+  // Load dogs
+  const { data: dogs, error: dogsError } = await supabase
+    .from('dogs')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .order('slot', { ascending: true });
+
+  if (dogsError) {
+    console.error('[OnboardingService] Failed to load dogs:', dogsError);
+    throw new Error(`Failed to load dogs: ${dogsError.message}`);
+  }
+
+  if (!dogs || dogs.length === 0) {
+    return [];
+  }
+
+  // Load prompts for all dogs
+  let promptsBySlot: Record<number, Array<{
+    prompt_question_id: string;
+    answer_text: string;
+    display_order: number;
+  }>> = {};
+
+  try {
+    const allPrompts = await getAllDogPromptAnswers(userId);
+    promptsBySlot = allPrompts;
+  } catch (error) {
+    console.error('[OnboardingService] Failed to load prompts (continuing without prompts):', error);
+    // Continue without prompts - they're optional
+  }
+
+  // Convert dogs and attach prompts
+  return dogs.map((dbDog) => {
+    const prompts = promptsBySlot[dbDog.slot];
+    return dbDogToDogProfile(dbDog, prompts);
+  });
 }
 
 /**

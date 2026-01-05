@@ -136,6 +136,8 @@ export async function loadMe(): Promise<MeData> {
 /**
  * @deprecated Use loadMe() instead. This function makes multiple wide select('*') calls.
  * Kept for backwards compatibility during migration.
+ * 
+ * Loads "My Pack" data including prompts in a single fetch
  */
 export async function loadBootstrap(userId: string): Promise<BootstrapData> {
   try {
@@ -164,6 +166,38 @@ export async function loadBootstrap(userId: string): Promise<BootstrapData> {
       console.error('[statusRepository] Failed to load dogs:', dogsError);
     }
 
+    // Load prompts for all dogs (part of "My Pack" payload)
+    let promptsBySlot: Record<number, Array<{
+      prompt_question_id: string;
+      answer_text: string;
+      display_order: number;
+    }>> = {};
+    
+    if (dogs && dogs.length > 0) {
+      try {
+        const { getAllDogPromptAnswers } = await import('../prompts/dogPromptService');
+        const allPrompts = await getAllDogPromptAnswers(userId);
+        // Convert DogPromptAnswerWithQuestion[] to DogPrompt[] format
+        promptsBySlot = Object.entries(allPrompts).reduce((acc, [slot, prompts]) => {
+          acc[Number(slot)] = prompts.map(p => ({
+            prompt_question_id: p.prompt_question_id,
+            answer_text: p.answer_text,
+            display_order: p.display_order,
+          }));
+          return acc;
+        }, {} as Record<number, Array<{ prompt_question_id: string; answer_text: string; display_order: number }>>);
+      } catch (error) {
+        console.error('[statusRepository] Failed to load prompts (continuing without prompts):', error);
+        // Continue without prompts - they're optional
+      }
+    }
+
+    // Attach prompts to dogs as a property for conversion
+    const dogsWithPrompts = (dogs || []).map((dog) => ({
+      ...dog,
+      _prompts: promptsBySlot[dog.slot] || [],
+    }));
+
     const { data: preferences, error: prefsError } = await supabase
       .from('preferences')
       .select('*')
@@ -179,7 +213,7 @@ export async function loadBootstrap(userId: string): Promise<BootstrapData> {
       onboarding,
       draft: {
         profile: profile || null,
-        dogs: dogs || [],
+        dogs: dogsWithPrompts || [],
         preferences: preferences || null,
       },
     };

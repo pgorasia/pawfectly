@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
-import { useRouter } from 'expo-router';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, AppState, AppStateStatus } from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
@@ -11,6 +12,8 @@ import { useMe } from '@/contexts/MeContext';
 import { updatePreferencesData } from '@/services/supabase/onboardingService';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+
+type PreferencesTab = 'pawsome-pals' | 'pawfect-match';
 
 const CONNECTION_STYLES: {
   emoji: string;
@@ -147,10 +150,6 @@ function PreferencesSection({
 
   return (
     <Card style={styles.preferenceCard}>
-      <AppText variant="heading" style={styles.sectionHeader}>
-        {CONNECTION_STYLE_LABELS[style]}
-      </AppText>
-
       <View style={styles.section}>
         <AppText variant="body" style={styles.sectionTitle}>
           Preferred Genders
@@ -246,6 +245,21 @@ export default function PreferencesScreen() {
   const [selectedStyles, setSelectedStyles] = useState<ConnectionStyle[]>(
     draft.connectionStyles || []
   );
+  const [activeTab, setActiveTab] = useState<PreferencesTab>('pawsome-pals');
+  const isEditMode = me.profile?.lifecycle_status === 'active';
+  const hasUnsavedChanges = useRef(false);
+  const appState = useRef(AppState.currentState);
+  
+  // Set initial active tab based on selected styles
+  useEffect(() => {
+    if (selectedStyles.length > 0) {
+      if (selectedStyles.includes('pawsome-pals')) {
+        setActiveTab('pawsome-pals');
+      } else if (selectedStyles.includes('pawfect-match')) {
+        setActiveTab('pawfect-match');
+      }
+    }
+  }, [selectedStyles]);
 
   const toggleStyle = (style: ConnectionStyle) => {
     const newStyles = selectedStyles.includes(style)
@@ -253,11 +267,69 @@ export default function PreferencesScreen() {
       : [...selectedStyles, style];
     setSelectedStyles(newStyles);
     updateConnectionStyles(newStyles);
+    hasUnsavedChanges.current = true;
   };
 
   const handleUpdatePreferences = (style: ConnectionStyle, prefs: Preferences) => {
     updatePreferences(style, prefs);
+    hasUnsavedChanges.current = true;
   };
+
+  const canSave = selectedStyles.length > 0;
+
+  // Auto-save function
+  const autoSave = useCallback(async () => {
+    if (!user?.id || !hasUnsavedChanges.current || selectedStyles.length === 0) return;
+    
+    try {
+      // Update MeContext optimistically (server cache)
+      updateMe({
+        connectionStyles: selectedStyles,
+        preferences: draft.preferences,
+      });
+
+      // Save to database
+      await updatePreferencesData(user.id, selectedStyles, draft.preferences);
+      hasUnsavedChanges.current = false;
+    } catch (error) {
+      console.error('[PreferencesScreen] Failed to auto-save preferences:', error);
+    }
+  }, [user?.id, selectedStyles, draft.preferences, updateMe]);
+
+  // Auto-save on app state change (background/foreground)
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (
+        appState.current.match(/active/) &&
+        nextAppState.match(/inactive|background/)
+      ) {
+        // App is going to background - save
+        autoSave();
+      }
+      appState.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [autoSave]);
+
+  // Auto-save when navigating away (using useFocusEffect cleanup)
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        // Component is losing focus (navigating away) - save
+        autoSave();
+      };
+    }, [autoSave])
+  );
+
+  // Auto-save on unmount (back button, etc.)
+  useEffect(() => {
+    return () => {
+      autoSave();
+    };
+  }, [autoSave]);
 
   const handleSave = async () => {
     if (!user?.id) return;
@@ -279,10 +351,15 @@ export default function PreferencesScreen() {
     }
   };
 
-  const canSave = selectedStyles.length > 0;
-
   return (
     <ScreenContainer>
+      {isEditMode && (
+        <View style={styles.backButtonContainer}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+          </TouchableOpacity>
+        </View>
+      )}
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -290,9 +367,6 @@ export default function PreferencesScreen() {
         <View style={styles.header}>
           <AppText variant="heading" style={styles.title}>
             How would you like to connect?
-          </AppText>
-          <AppText variant="body" style={styles.subtitle}>
-            All connections are dog-approved first.
           </AppText>
         </View>
 
@@ -337,9 +411,11 @@ export default function PreferencesScreen() {
           })}
         </View>
 
-        <AppText variant="caption" style={styles.changeLaterText}>
-          You can always change this later
-        </AppText>
+        {me.profile?.lifecycle_status !== 'active' && (
+          <AppText variant="caption" style={styles.changeLaterText}>
+            You can always change this later
+          </AppText>
+        )}
 
         {selectedStyles.length === 0 && (
           <AppText variant="caption" color={Colors.accent} style={styles.errorText}>
@@ -347,38 +423,84 @@ export default function PreferencesScreen() {
           </AppText>
         )}
 
-        {selectedStyles.includes('pawsome-pals') && (
-          <PreferencesSection
-            style="pawsome-pals"
-            preferences={draft.preferences['pawsome-pals']}
-            onUpdate={(prefs) => handleUpdatePreferences('pawsome-pals', prefs)}
-          />
+        {/* Tabs for preferences */}
+        {selectedStyles.length > 0 && (
+          <View style={styles.tabsContainer}>
+            <View style={styles.tabBar}>
+              {selectedStyles.includes('pawsome-pals') && (
+                <TouchableOpacity
+                  style={[styles.tab, activeTab === 'pawsome-pals' && styles.tabActive]}
+                  onPress={() => setActiveTab('pawsome-pals')}
+                >
+                  <AppText
+                    variant="body"
+                    style={[styles.tabText, activeTab === 'pawsome-pals' && styles.tabTextActive]}
+                  >
+                    🐾 Pawsome Pals
+                  </AppText>
+                </TouchableOpacity>
+              )}
+              {selectedStyles.includes('pawfect-match') && (
+                <TouchableOpacity
+                  style={[styles.tab, activeTab === 'pawfect-match' && styles.tabActive]}
+                  onPress={() => setActiveTab('pawfect-match')}
+                >
+                  <AppText
+                    variant="body"
+                    style={[styles.tabText, activeTab === 'pawfect-match' && styles.tabTextActive]}
+                  >
+                    💛 Pawfect Match
+                  </AppText>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={styles.tabContent}>
+              {activeTab === 'pawsome-pals' && selectedStyles.includes('pawsome-pals') && (
+                <PreferencesSection
+                  style="pawsome-pals"
+                  preferences={draft.preferences['pawsome-pals']}
+                  onUpdate={(prefs) => handleUpdatePreferences('pawsome-pals', prefs)}
+                />
+              )}
+
+              {activeTab === 'pawfect-match' && selectedStyles.includes('pawfect-match') && (
+                <PreferencesSection
+                  style="pawfect-match"
+                  preferences={draft.preferences['pawfect-match']}
+                  onUpdate={(prefs) => handleUpdatePreferences('pawfect-match', prefs)}
+                />
+              )}
+            </View>
+          </View>
         )}
 
-        {selectedStyles.includes('pawfect-match') && (
-          <PreferencesSection
-            style="pawfect-match"
-            preferences={draft.preferences['pawfect-match']}
-            onUpdate={(prefs) => handleUpdatePreferences('pawfect-match', prefs)}
-          />
+        {!isEditMode && (
+          <View style={styles.buttonContainer}>
+            <AppButton
+              variant="primary"
+              onPress={handleSave}
+              disabled={!canSave}
+              style={styles.button}
+            >
+              Save
+            </AppButton>
+          </View>
         )}
-
-        <View style={styles.buttonContainer}>
-          <AppButton
-            variant="primary"
-            onPress={handleSave}
-            disabled={!canSave}
-            style={styles.button}
-          >
-            Save
-          </AppButton>
-        </View>
       </ScrollView>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
+  backButtonContainer: {
+    padding: Spacing.md,
+    paddingTop: Spacing.lg,
+  },
+  backButton: {
+    padding: Spacing.sm,
+    marginLeft: -Spacing.sm,
+  },
   scrollContent: {
     flexGrow: 1,
     padding: Spacing.lg,
@@ -462,10 +584,6 @@ const styles = StyleSheet.create({
   preferenceCard: {
     marginBottom: Spacing.xl,
   },
-  sectionHeader: {
-    marginBottom: Spacing.lg,
-    textAlign: 'center',
-  },
   section: {
     marginBottom: Spacing.xl,
   },
@@ -540,5 +658,35 @@ const styles = StyleSheet.create({
   },
   button: {
     width: '100%',
+  },
+  tabsContainer: {
+    marginTop: Spacing.lg,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+    marginBottom: Spacing.lg,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: Colors.primary,
+  },
+  tabText: {
+    opacity: 0.5,
+  },
+  tabTextActive: {
+    opacity: 1,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  tabContent: {
+    minHeight: 200,
   },
 });
