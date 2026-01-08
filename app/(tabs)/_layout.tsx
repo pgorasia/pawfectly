@@ -1,62 +1,38 @@
 import { Tabs, useFocusEffect } from 'expo-router';
-import React, { useEffect, useRef } from 'react';
+import React, { useRef } from 'react';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAuth } from '@/contexts/AuthContext';
-import { useMe } from '@/contexts/MeContext';
-import { useProfileDraft } from '@/hooks/useProfileDraft';
-import { loadBootstrap } from '@/services/profile/statusRepository';
+import { getPromptQuestions } from '@/services/prompts/promptService';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const { user } = useAuth();
-  const { loadFromDatabase: loadMeFromDatabase } = useMe();
-  const { loadFromDatabase: loadDraftFromDatabase } = useProfileDraft();
-  const didHydrateRef = useRef(false);
+  const promptsPreloadedRef = useRef(false);
 
-  // Hydrate MeContext and DraftContext when entering tabs (once per session)
+  // Pre-load prompt questions when entering tabs (once per session)
+  // This eliminates lag when rendering DogPromptsDisplay
+  // Contexts are already hydrated by canonical bootstrap in app/_layout.tsx
   useFocusEffect(
     React.useCallback(() => {
-      if (!user?.id || didHydrateRef.current) {
+      if (!user?.id || promptsPreloadedRef.current) {
         return;
       }
 
-      // Mark as hydrated immediately to prevent duplicate calls
-      didHydrateRef.current = true;
+      // Mark as preloaded immediately to prevent duplicate calls
+      promptsPreloadedRef.current = true;
 
-      // Load full data and hydrate contexts
-      loadBootstrap(user.id)
-        .then((bootstrapData) => {
-          // Update MeContext (server cache) with full data
-          loadMeFromDatabase({
-            profile: bootstrapData.draft.profile,
-            dogs: bootstrapData.draft.dogs,
-            preferences: bootstrapData.draft.preferences,
-          });
-          // Update DraftContext (for Account tabs that read from draft)
-          loadDraftFromDatabase({
-            profile: bootstrapData.draft.profile,
-            dogs: bootstrapData.draft.dogs,
-            preferences: bootstrapData.draft.preferences,
-          });
-        })
-        .catch((error) => {
-          console.error('[TabLayout] Failed to hydrate contexts:', error);
-          // Reset flag on error so it can retry
-          didHydrateRef.current = false;
-        });
-    }, [user?.id, loadMeFromDatabase, loadDraftFromDatabase])
+      // Pre-load prompt questions (static, cached) to avoid lag when rendering prompts
+      getPromptQuestions().catch((error) => {
+        console.error('[TabLayout] Failed to pre-load prompt questions:', error);
+        // Reset flag on error so it can retry
+        promptsPreloadedRef.current = false;
+      });
+    }, [user?.id])
   );
-
-  // Reset hydration flag when user logs out
-  useEffect(() => {
-    if (!user) {
-      didHydrateRef.current = false;
-    }
-  }, [user]);
 
   return (
     <Tabs

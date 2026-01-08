@@ -96,7 +96,8 @@ export default function HumanScreen() {
         // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
         if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
           // First ensure the row exists, then set the step
-          getOrCreateOnboarding(user.id)
+          // Pass userId from context to avoid network call
+          getOrCreateOnboarding(user?.id ?? null)
             .then(() => setLastStep(user.id, 'human'))
             .catch((error) => {
               console.error('[HumanScreen] Failed to set current step:', error);
@@ -137,8 +138,8 @@ export default function HumanScreen() {
           dob: me.profile.dob || null,
           gender: me.profile.gender || null,
           city: me.profile.city || null,
-          lat: me.profile.lat || null,
-          lng: me.profile.lng || null,
+          latitude: me.profile.latitude || null,
+          longitude: me.profile.longitude || null,
           lifecycle_status: me.profile.lifecycle_status,
           validation_status: me.profile.validation_status,
         };

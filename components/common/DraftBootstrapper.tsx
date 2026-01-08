@@ -14,8 +14,20 @@ import { useProfileDraft } from '@/hooks/useProfileDraft';
 export function DraftBootstrapper() {
   const { user } = useAuth();
   const { me, meLoaded } = useMe();
-  const { loadFromDatabase, draftHydrated } = useProfileDraft();
+  const { loadFromDatabase, draftHydrated, reset: resetDraft } = useProfileDraft();
   const hasBootstrapped = useRef(false);
+  const lastUserIdRef = useRef<string | null>(null);
+
+  // Reset draft when user changes
+  useEffect(() => {
+    const currentUserId = user?.id ?? null;
+    if (lastUserIdRef.current !== currentUserId) {
+      // User changed - reset draft and bootstrap state
+      lastUserIdRef.current = currentUserId;
+      resetDraft();
+      hasBootstrapped.current = false;
+    }
+  }, [user?.id, resetDraft]);
 
   useEffect(() => {
     // Initialize draft from Me once Me is loaded and draft is not yet hydrated
@@ -39,8 +51,8 @@ export function DraftBootstrapper() {
             dob: me.profile.dob || null,
             gender: me.profile.gender || null,
             city: me.profile.city || null,
-            lat: me.profile.lat || null,
-            lng: me.profile.lng || null,
+            latitude: me.profile.latitude || null,
+            longitude: me.profile.longitude || null,
             lifecycle_status: me.profile.lifecycle_status,
             validation_status: me.profile.validation_status,
           }

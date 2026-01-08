@@ -9,6 +9,17 @@
 import { supabase } from '../supabase/supabaseClient';
 import type { DogProfile, HumanProfile, Location, Preferences, ConnectionStyle } from '@/hooks/useProfileDraft';
 
+// Global flag to check if account deletion is in progress
+// This is set by AuthSessionStore and checked by service functions
+let globalIsDeletingAccount = false;
+
+/**
+ * Set the global deletion flag (called by AuthSessionStore)
+ */
+export function setGlobalIsDeletingAccount(flag: boolean) {
+  globalIsDeletingAccount = flag;
+}
+
 export type OnboardingStep = 'pack' | 'human' | 'photos' | 'preferences' | 'done';
 
 export interface OnboardingStatus {
@@ -55,6 +66,7 @@ export interface MeData {
   profile: {
     lifecycle_status: 'onboarding' | 'pending_review' | 'active' | 'limited' | 'blocked';
     validation_status: 'not_started' | 'in_progress' | 'passed' | 'failed_requirements' | 'failed_photos';
+    deleted_at: string | null;
   } | null;
   dogs: Array<{
     slot: number;
@@ -68,25 +80,60 @@ export interface MeData {
 }
 
 /**
- * Get or create onboarding_status row with defaults if missing
+ * Default onboarding status object
  */
-export async function getOrCreateOnboarding(userId: string): Promise<OnboardingStatus> {
+const DEFAULT_ONBOARDING_STATUS = (userId: string): OnboardingStatus => ({
+  user_id: userId,
+  last_step: 'pack',
+  dog_submitted: false,
+  human_submitted: false,
+  photos_submitted: false,
+  preferences_submitted: false,
+  updated_at: new Date().toISOString(),
+});
+
+/**
+ * Get or create onboarding_status row with defaults if missing
+ * @param userId - User ID from AuthContext (avoids network call)
+ * Never attempts INSERT if user is invalid or account deletion is in progress
+ */
+export async function getOrCreateOnboarding(userId: string | null): Promise<OnboardingStatus> {
+  // Use provided userId (from AuthContext) - no network call needed
+  const uid = userId;
+
+  // If no user or deletion in progress, return default (no inserts)
+  if (!uid || globalIsDeletingAccount) {
+    if (!uid) {
+      console.log('[statusRepository] No authenticated user, returning default onboarding status');
+    } else if (globalIsDeletingAccount) {
+      console.log('[statusRepository] Account deletion in progress, returning default onboarding status');
+    }
+    return DEFAULT_ONBOARDING_STATUS(uid || '');
+  }
+
   // Try to get existing
   const { data: existing, error: selectError } = await supabase
     .from('onboarding_status')
     .select('*')
-    .eq('user_id', userId)
+    .eq('user_id', uid)
     .single();
 
   if (existing && !selectError) {
     return existing;
   }
 
-  // Create if missing
+  // Double-check deletion state before INSERT to prevent race condition
+  // (deletion could have started between initial check and SELECT above)
+  if (globalIsDeletingAccount) {
+    console.log('[statusRepository] Account deletion started during getOrCreateOnboarding, returning default (no INSERT)');
+    return DEFAULT_ONBOARDING_STATUS(uid || '');
+  }
+
+  // Create if missing (only if user is authenticated and not deleting)
   const { data: created, error: insertError } = await supabase
     .from('onboarding_status')
     .insert({
-      user_id: userId,
+      user_id: uid,
       last_step: 'pack',
       dog_submitted: false,
       human_submitted: false,
@@ -134,33 +181,116 @@ export async function loadMe(): Promise<MeData> {
 }
 
 /**
+ * Minimal bootstrap data for signed-out or deleted states
+ */
+const MINIMAL_BOOTSTRAP_DATA = (userId: string | null): BootstrapData => ({
+  profile: null,
+  onboarding: {
+    user_id: userId || '',
+    last_step: 'pack',
+    dog_submitted: false,
+    human_submitted: false,
+    photos_submitted: false,
+    preferences_submitted: false,
+    updated_at: new Date().toISOString(),
+  },
+  draft: {
+    profile: null,
+    dogs: [],
+    preferences: null,
+  },
+});
+
+/**
+ * Check function type for bootstrap cancellation
+ */
+export type BootstrapCheckFn = () => Promise<{
+  shouldContinue: boolean;
+  sessionUserId: string | null;
+}>;
+
+/**
  * @deprecated Use loadMe() instead. This function makes multiple wide select('*') calls.
  * Kept for backwards compatibility during migration.
  * 
  * Loads "My Pack" data including prompts in a single fetch
+ * 
+ * @param checkFn - Function to check if bootstrap should continue (returns { shouldContinue, sessionUserId })
+ *                  If not provided, uses userId parameter
+ * @param userId - User ID from AuthContext (avoids network call when checkFn not provided)
  */
-export async function loadBootstrap(userId: string): Promise<BootstrapData> {
+export async function loadBootstrap(checkFn?: BootstrapCheckFn, userId?: string | null): Promise<BootstrapData> {
+  // Get current session once at start
+  const getCheck = async () => {
+    if (checkFn) {
+      return checkFn();
+    }
+    // Default check: use provided userId from AuthContext (no network call)
+    const sessionUserId = userId ?? null;
+    return {
+      shouldContinue: sessionUserId !== null && !globalIsDeletingAccount,
+      sessionUserId,
+    };
+  };
+
+  let check = await getCheck();
+  const initialSessionUserId = check.sessionUserId;
+
+  // If session is null or deletion in progress, return minimal bootstrap
+  if (!check.shouldContinue || !initialSessionUserId) {
+    if (!initialSessionUserId) {
+      console.log('[statusRepository] No session user, returning minimal bootstrap');
+    } else if (globalIsDeletingAccount) {
+      console.log('[statusRepository] Account deletion in progress, returning minimal bootstrap');
+    }
+    return MINIMAL_BOOTSTRAP_DATA(initialSessionUserId);
+  }
+
+  // Use the userId from check result (which may have come from parameter or checkFn)
+  const currentUserId = initialSessionUserId;
+
   try {
     // Fetch profile
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', currentUserId)
       .maybeSingle();
+
+    // Check if we should continue after await
+    check = await getCheck();
+    if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
+      console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
+      return MINIMAL_BOOTSTRAP_DATA(check.sessionUserId);
+    }
 
     if (profileError && profileError.code !== 'PGRST116') {
       console.error('[statusRepository] Failed to load profile:', profileError);
     }
 
-    // Fetch onboarding_status
-    const onboarding = await getOrCreateOnboarding(userId);
+    // Fetch onboarding_status using currentUserId (no network call)
+    const onboarding = await getOrCreateOnboarding(currentUserId);
+
+    // Check again after await
+    check = await getCheck();
+    if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
+      console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
+      return MINIMAL_BOOTSTRAP_DATA(check.sessionUserId);
+    }
 
     // Fetch draft data (dogs, preferences)
     const { data: dogs, error: dogsError } = await supabase
       .from('dogs')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', currentUserId)
       .order('slot', { ascending: true });
+
+    // Check again after await
+    check = await getCheck();
+    if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
+      console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
+      return MINIMAL_BOOTSTRAP_DATA(check.sessionUserId);
+    }
 
     if (dogsError) {
       console.error('[statusRepository] Failed to load dogs:', dogsError);
@@ -176,7 +306,7 @@ export async function loadBootstrap(userId: string): Promise<BootstrapData> {
     if (dogs && dogs.length > 0) {
       try {
         const { getAllDogPromptAnswers } = await import('../prompts/dogPromptService');
-        const allPrompts = await getAllDogPromptAnswers(userId);
+        const allPrompts = await getAllDogPromptAnswers(currentUserId);
         // Convert DogPromptAnswerWithQuestion[] to DogPrompt[] format
         promptsBySlot = Object.entries(allPrompts).reduce((acc, [slot, prompts]) => {
           acc[Number(slot)] = prompts.map(p => ({
@@ -201,8 +331,15 @@ export async function loadBootstrap(userId: string): Promise<BootstrapData> {
     const { data: preferences, error: prefsError } = await supabase
       .from('preferences')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', currentUserId)
       .maybeSingle();
+
+    // Final check before returning
+    check = await getCheck();
+    if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
+      console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
+      return MINIMAL_BOOTSTRAP_DATA(check.sessionUserId);
+    }
 
     if (prefsError && prefsError.code !== 'PGRST116') {
       console.error('[statusRepository] Failed to load preferences:', prefsError);
@@ -465,3 +602,26 @@ export async function applyValidationResult(
   );
 }
 
+/**
+ * Set profile hidden status
+ * Calls RPC function set_profile_hidden to update is_hidden and hidden_at
+ * Returns the new is_hidden value, or throws on error
+ */
+export async function setProfileHidden(hidden: boolean): Promise<boolean> {
+  const { data, error } = await supabase.rpc('set_profile_hidden', {
+    p_hidden: hidden,
+  });
+
+  if (error) {
+    console.error('[statusRepository] Failed to set profile hidden:', error);
+    throw new Error(`Failed to set profile hidden: ${error.message}`);
+  }
+
+  if (!data?.ok) {
+    const errorMsg = data?.error ?? 'Failed to set profile hidden';
+    console.error('[statusRepository] set_profile_hidden returned error:', errorMsg);
+    throw new Error(errorMsg);
+  }
+
+  return data.is_hidden ?? false;
+}

@@ -62,13 +62,12 @@ export async function unblockUser(
 /**
  * Get all blocked users for the current user
  * Uses database function to bypass RLS and get display_name reliably
+ * Uses auth.uid() internally - no userId parameter needed
  */
-export async function getBlockedUsers(userId: string): Promise<BlockedUser[]> {
+export async function getBlockedUsers(): Promise<BlockedUser[]> {
   // Use database function to get blocked users with display names
   // This function uses SECURITY DEFINER to bypass RLS and fetch display_name
-  const { data, error } = await supabase.rpc('get_blocked_users_with_names', {
-    p_blocker_id: userId,
-  });
+  const { data, error } = await supabase.rpc('get_blocked_users_with_names');
 
   if (error) {
     console.error('[blockService] Failed to get blocked users:', error);

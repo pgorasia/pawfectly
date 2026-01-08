@@ -546,7 +546,13 @@ export default function EditPackPage() {
           keyboardDismissMode="on-drag"
         >
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <TouchableOpacity onPress={() => {
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/(tabs)/account');
+              }
+            }} style={styles.backButton}>
               <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
             </TouchableOpacity>
             <AppText variant="heading" style={styles.title}>

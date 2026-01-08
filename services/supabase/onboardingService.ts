@@ -113,8 +113,8 @@ export async function updateProfileData(
       dob: human.dateOfBirth || null,
       gender: human.gender || null,
       city: location?.city || null,
-      lat: location?.latitude || null,
-      lng: location?.longitude || null,
+      latitude: location?.latitude || null,
+      longitude: location?.longitude || null,
       // Note: lifecycle_status and validation_status are managed by statusRepository, not here
     };
 
@@ -344,8 +344,8 @@ export async function saveHumanData(
       dob: human.dateOfBirth || null,
       gender: human.gender || null,
       city: location?.city || null,
-      lat: location?.latitude || null,
-      lng: location?.longitude || null,
+      latitude: location?.latitude || null,
+      longitude: location?.longitude || null,
     };
 
     const { error: profileError } = await supabase
@@ -385,8 +385,8 @@ export async function savePackData(
       dob: human.dateOfBirth || null,
       gender: human.gender || null,
       city: location?.city || null,
-      lat: location?.latitude || null,
-      lng: location?.longitude || null,
+      latitude: location?.latitude || null,
+      longitude: location?.longitude || null,
     };
 
     const { error: profileError } = await supabase

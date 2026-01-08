@@ -19,7 +19,19 @@ Server-side photo validation using trusted AI model.
    supabase link --project-ref <your-project-ref>
    ```
 
-4. Deploy the function:
+4. Set the required environment variable in Supabase Dashboard:
+   - Go to your Supabase project dashboard
+   - Navigate to **Project Settings** → **Edge Functions** → **Secrets**
+   - Add a secret named: `OPENAI_API_KEY_DEV`
+   - Set the value to your OpenAI API key
+   - Click **Save**
+
+   Alternatively, using Supabase CLI:
+   ```bash
+   supabase secrets set OPENAI_API_KEY_DEV=your-api-key-here
+   ```
+
+5. Deploy the function:
    ```bash
    supabase functions deploy validate-photo
    ```

@@ -8,6 +8,7 @@
  */
 
 import { supabase } from '../supabase/supabaseClient';
+import type { ProfileViewPayload, FeedCursor } from '@/types/feed';
 
 /**
  * Builds a public URL for a hero photo from Supabase Storage
@@ -38,8 +39,8 @@ export interface FeedProfile {
   user_id: string;
   display_name: string | null;
   city: string | null;
-  lat: number | null;
-  lng: number | null;
+  latitude: number | null;
+  longitude: number | null;
   lifecycle_status: 'active' | 'limited';
   validation_status: string;
   photos: FeedPhoto[];
@@ -64,10 +65,7 @@ export interface FeedDog {
   energy: string;
 }
 
-export interface FeedCursor {
-  updated_at: string;
-  user_id: string;
-}
+// FeedCursor is now exported from types/feed.ts
 
 export interface FeedResult {
   profiles: FeedProfile[];
@@ -90,8 +88,8 @@ export async function getFeedProfiles(
       user_id,
       display_name,
       city,
-      lat,
-      lng,
+      latitude,
+      longitude,
       lifecycle_status,
       validation_status,
       updated_at
@@ -204,8 +202,8 @@ export async function getFeedProfiles(
     user_id: profile.user_id,
     display_name: profile.display_name,
     city: profile.city,
-    lat: profile.lat,
-    lng: profile.lng,
+    latitude: profile.latitude,
+    longitude: profile.longitude,
     lifecycle_status: profile.lifecycle_status as 'active' | 'limited',
     validation_status: profile.validation_status,
     photos: photosByUser.get(profile.user_id) || [],
@@ -262,13 +260,16 @@ export interface SubmitSwipeResult {
 }
 
 /**
+ * @deprecated Use getFeedQueue instead. This method is kept for backward compatibility.
  * Get basic feed candidates using RPC function
  * Returns candidates ready for swipe feed display
+ * Uses auth.uid() internally - no viewerId parameter needed
  */
-export async function getFeedBasic(viewerId: string, limit: number = 20): Promise<FeedBasicCandidate[]> {
+export async function getFeedBasic(limit: number = 20): Promise<FeedBasicCandidate[]> {
   const { data, error } = await supabase.rpc('get_feed_basic', {
-    p_viewer_id: viewerId,
     p_limit: limit,
+    p_cursor_updated_at: null,
+    p_cursor_user_id: null,
   });
 
   if (error) {
@@ -307,16 +308,77 @@ export async function getFeedBasic(viewerId: string, limit: number = 20): Promis
 }
 
 /**
+ * Get feed queue using cursor-based pagination
+ * Returns candidate IDs and next cursor for queue management
+ * Uses auth.uid() internally - no viewerId parameter needed
+ */
+export async function getFeedQueue(
+  limit: number = 10,
+  cursor: FeedCursor | null = null
+): Promise<{ candidateIds: string[]; nextCursor: FeedCursor | null }> {
+  const { data, error } = await supabase.rpc('get_feed_basic', {
+    p_limit: limit,
+    p_cursor_updated_at: cursor?.updated_at ?? null,
+    p_cursor_user_id: cursor?.user_id ?? null,
+  });
+
+  if (error) {
+    console.error('[feedService] Failed to get feed queue:', error);
+    throw new Error(`Failed to get feed queue: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    return { candidateIds: [], nextCursor: null };
+  }
+
+  const candidateIds = data.map((row: any) => row.candidate_id);
+  
+  // Determine next cursor from the last row
+  const lastRow = data[data.length - 1];
+  const nextCursor: FeedCursor | null = lastRow
+    ? {
+        updated_at: lastRow.cursor_updated_at ?? lastRow.updated_at,
+        user_id: lastRow.cursor_user_id ?? lastRow.candidate_id,
+      }
+    : null;
+
+  return { candidateIds, nextCursor };
+}
+
+/**
+ * Get full profile view for a candidate
+ * Returns complete profile data including dogs, photos, prompts, and compatibility
+ * Uses auth.uid() internally - no viewerId parameter needed
+ */
+export async function getProfileView(candidateId: string): Promise<ProfileViewPayload> {
+  const { data, error } = await supabase.rpc('get_profile_view', {
+    p_candidate_id: candidateId,
+  });
+
+  if (error) {
+    console.error('[feedService] Failed to get profile view:', error);
+    throw new Error(`Failed to get profile view: ${error.message}`);
+  }
+
+  if (!data) {
+    throw new Error('No profile data returned');
+  }
+
+  return data as ProfileViewPayload;
+}
+
+/**
  * Submit a swipe action (reject, pass, or accept)
  * Returns result with remaining accepts count or error
+ * Uses auth.uid() internally - no viewerId parameter needed
+ * 
+ * @deprecated The old signature with viewerId is deprecated. This method now only takes candidateId and action.
  */
 export async function submitSwipe(
-  viewerId: string,
   candidateId: string,
   action: 'reject' | 'pass' | 'accept'
 ): Promise<SubmitSwipeResult> {
   const { data, error } = await supabase.rpc('submit_swipe', {
-    p_viewer_id: viewerId,
     p_candidate_id: candidateId,
     p_action: action,
   });
@@ -327,6 +389,58 @@ export async function submitSwipe(
   }
 
   return data as SubmitSwipeResult;
+}
+
+/**
+ * Send a connection request with optional compliment message
+ * Uses auth.uid() internally - no viewerId parameter needed
+ * 
+ * @param candidateId - The recipient's user ID
+ * @param sourceType - Either 'photo' or 'prompt'
+ * @param sourceRefId - The photo ID if sourceType is 'photo', or prompt answer ID if sourceType is 'prompt'
+ * @param message - Optional compliment message
+ */
+export async function sendConnectionRequest(
+  candidateId: string,
+  sourceType: 'photo' | 'prompt',
+  sourceRefId: string,
+  message: string | null = null
+): Promise<{ ok: boolean; error?: string }> {
+  // Map parameters to match SQL function signature:
+  // p_recipient_id, p_context_type, p_context_photo_id, p_context_prompt_answer_id, p_message
+  const params: {
+    p_recipient_id: string;
+    p_context_type: string;
+    p_context_photo_id?: string | null;
+    p_context_prompt_answer_id?: string | null;
+    p_message?: string | null;
+  } = {
+    p_recipient_id: candidateId,
+    p_context_type: sourceType,
+  };
+
+  // Set the appropriate context ID based on source type
+  if (sourceType === 'photo') {
+    params.p_context_photo_id = sourceRefId;
+    params.p_context_prompt_answer_id = null;
+  } else if (sourceType === 'prompt') {
+    params.p_context_photo_id = null;
+    params.p_context_prompt_answer_id = sourceRefId;
+  }
+
+  // Add message if provided
+  if (message !== null) {
+    params.p_message = message;
+  }
+
+  const { data, error } = await supabase.rpc('send_connection_request', params);
+
+  if (error) {
+    console.error('[feedService] Failed to send connection request:', error);
+    throw new Error(`Failed to send connection request: ${error.message}`);
+  }
+
+  return data as { ok: boolean; error?: string };
 }
 
 /**

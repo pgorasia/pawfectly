@@ -92,7 +92,8 @@ export default function PhotosScreen() {
     // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist - new user)
     if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
       // First ensure the row exists, then set the step
-      getOrCreateOnboarding(user.id)
+      // Pass userId from context to avoid network call
+      getOrCreateOnboarding(user?.id ?? null)
         .then(() => setLastStep(user.id, 'photos'))
         .catch((error) => {
           console.error('[PhotosScreen] Failed to set current step:', error);

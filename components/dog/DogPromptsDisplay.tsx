@@ -17,12 +17,20 @@ interface DogPromptsDisplayProps {
 
 export function DogPromptsDisplay({ dog }: DogPromptsDisplayProps) {
   const [prompts, setPrompts] = useState<PromptQuestion[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Load prompt questions (for parsing question text, cached so fast)
+  // Pre-loaded in TabLayout bootstrap, so this should be instant if cache is warm
   useEffect(() => {
     getPromptQuestions()
-      .then(setPrompts)
-      .catch((error) => console.error('[DogPromptsDisplay] Failed to load prompt questions:', error));
+      .then((loadedPrompts) => {
+        setPrompts(loadedPrompts);
+        setLoading(false);
+      })
+      .catch((error) => {
+        console.error('[DogPromptsDisplay] Failed to load prompt questions:', error);
+        setLoading(false);
+      });
   }, []);
 
   // Use prompts from dog object (part of cached "My Pack" payload)
@@ -44,6 +52,11 @@ export function DogPromptsDisplay({ dog }: DogPromptsDisplayProps) {
   };
 
   if (dogPrompts.length === 0) {
+    return null;
+  }
+
+  // Show nothing while loading (prompts are pre-loaded in bootstrap, so this should be very brief)
+  if (loading || prompts.length === 0) {
     return null;
   }
 

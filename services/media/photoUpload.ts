@@ -13,7 +13,6 @@
 
 import { pickImage } from './imagePicker';
 import { resizeAndUploadPhoto } from './resizeAndUploadPhoto';
-import { getCurrentUserId } from '../supabase/photoService';
 import type { Photo, BucketType } from '@/types/photo';
 
 export interface UploadPhotoWithValidationParams {
@@ -26,6 +25,8 @@ export interface UploadPhotoWithValidationParams {
   imageUri?: string;
   // Optional: If croppedUri is provided, use this already-cropped image for upload
   croppedUri?: string;
+  // User ID from AuthContext (avoids network call)
+  userId: string;
 }
 
 export interface UploadPhotoResult {
@@ -47,7 +48,7 @@ export interface UploadPhotoResult {
 export async function uploadPhotoWithValidation(
   params: UploadPhotoWithValidationParams
 ): Promise<UploadPhotoResult> {
-  const { bucketType, dogSlot, dogId, imageUri, croppedUri } = params;
+  const { bucketType, dogSlot, dogId, imageUri, croppedUri, userId } = params;
 
   try {
     let pickedImage: { uri: string; type?: string } | null = null;
@@ -70,10 +71,8 @@ export async function uploadPhotoWithValidation(
       pickedImage = picked;
     }
 
-    // Step 2: Get current user ID
-    const userId = await getCurrentUserId();
-
-    // Step 3: Resize, upload to Storage, and create photo record
+    // Step 2: Resize, upload to Storage, and create photo record
+    // userId is provided from AuthContext (no network call)
     // resizeAndUploadPhoto already creates the DB record and returns the full photo object
     const uploadResult = await resizeAndUploadPhoto({
       localUri: pickedImage.uri,

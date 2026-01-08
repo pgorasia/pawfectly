@@ -82,6 +82,9 @@ serve(async (req) => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            // Make the call work even if validate-photo has verify_jwt=true in production
+            "Authorization": `Bearer ${serviceRoleKey}`,
+            "apikey": serviceRoleKey,
             ...(internalSecret ? { "x-pawfectly-secret": internalSecret } : {}),
           },
           body: JSON.stringify({

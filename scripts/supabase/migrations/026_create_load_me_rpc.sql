@@ -37,7 +37,8 @@ BEGIN
     'profile', (
       SELECT json_build_object(
         'lifecycle_status', COALESCE(p.lifecycle_status, 'onboarding'),
-        'validation_status', COALESCE(p.validation_status, 'not_started')
+        'validation_status', COALESCE(p.validation_status, 'not_started'),
+        'deleted_at', p.deleted_at
       )
       FROM profiles p
       WHERE p.user_id = user_id_val

@@ -104,7 +104,14 @@ export default function SubscriptionScreen() {
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              // Navigate to settings if no history
+              router.replace('/(tabs)/account/settings');
+            }
+          }}>
             <AppText variant="body" style={styles.backButton}>
               ← Back
             </AppText>

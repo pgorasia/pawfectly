@@ -2,10 +2,12 @@ import { Stack, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthSessionStoreProvider } from "@/contexts/AuthSessionStore";
 import { MeProvider } from "@/contexts/MeContext";
 import { ProfileDraftProvider } from "@/hooks/useProfileDraft";
 import { MeBootstrapper } from "@/components/common/MeBootstrapper";
 import { DraftBootstrapper } from "@/components/common/DraftBootstrapper";
+import { AuthSessionSync } from "@/components/common/AuthSessionSync";
 import { setupNotificationHandler } from "@/services/notifications/photoNotifications";
 import * as Notifications from "expo-notifications";
 
@@ -40,16 +42,19 @@ function NotificationHandler() {
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AuthProvider>
-        <MeProvider>
-        <ProfileDraftProvider>
-            <MeBootstrapper />
-            <DraftBootstrapper />
-          <NotificationHandler />
-          <Stack screenOptions={{ headerShown: false }} />
-        </ProfileDraftProvider>
-        </MeProvider>
-      </AuthProvider>
+      <AuthSessionStoreProvider>
+        <AuthProvider>
+          <AuthSessionSync />
+          <MeProvider>
+          <ProfileDraftProvider>
+              <MeBootstrapper />
+              <DraftBootstrapper />
+            <NotificationHandler />
+            <Stack screenOptions={{ headerShown: false }} />
+          </ProfileDraftProvider>
+          </MeProvider>
+        </AuthProvider>
+      </AuthSessionStoreProvider>
     </GestureHandlerRootView>
   );
 }

@@ -81,7 +81,7 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
     const humanName = me.profile?.display_name || '';
     setName(humanName);
     setCity(me.profile?.city || '');
-    setLocationFromGPS(!!(me.profile?.lat && me.profile?.lng));
+    setLocationFromGPS(!!(me.profile?.latitude && me.profile?.longitude));
     setEditMode('human');
   };
 
@@ -106,8 +106,8 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
       updateLocation({
         useCurrentLocation: locationFromGPS,
         city: city.trim(),
-        latitude: locationFromGPS ? me.profile?.lat : undefined,
-        longitude: locationFromGPS ? me.profile?.lng : undefined,
+        latitude: locationFromGPS ? me.profile?.latitude : undefined,
+        longitude: locationFromGPS ? me.profile?.longitude : undefined,
       });
 
       // Update Me optimistically (server cache)
@@ -117,8 +117,8 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
             ...me.profile,
             display_name: name,
             city: city.trim(),
-            lat: locationFromGPS ? me.profile.lat : null,
-            lng: locationFromGPS ? me.profile.lng : null,
+            latitude: locationFromGPS ? me.profile.latitude : null,
+            longitude: locationFromGPS ? me.profile.longitude : null,
           },
         });
       }
@@ -130,8 +130,8 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
         {
           useCurrentLocation: locationFromGPS,
           city: city.trim(),
-          latitude: locationFromGPS ? me.profile?.lat : undefined,
-          longitude: locationFromGPS ? me.profile?.lng : undefined,
+          latitude: locationFromGPS ? me.profile?.latitude : undefined,
+          longitude: locationFromGPS ? me.profile?.longitude : undefined,
         }
       );
 

@@ -385,7 +385,8 @@ export default function DogsScreen() {
         // If profile doesn't exist (new user) or lifecycle_status is 'onboarding', update onboarding_status
         if (!lifecycleStatus || lifecycleStatus === 'onboarding') {
           // First ensure the row exists, then set the step
-          getOrCreateOnboarding(user.id)
+          // Pass userId from context to avoid network call
+          getOrCreateOnboarding(user?.id ?? null)
             .then(() => setLastStep(user.id, 'pack'))
             .catch((error) => {
               console.error('[DogsScreen] Failed to set current step:', error);

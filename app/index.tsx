@@ -9,7 +9,7 @@ import { Spacing } from '@/constants/spacing';
 
 export default function Index() {
   const router = useRouter();
-  const { user, initializing } = useAuth();
+  const { user, initializing, signOut } = useAuth();
 
   useEffect(() => {
     if (initializing) return;
@@ -24,6 +24,14 @@ export default function Index() {
       try {
         // Load minimal "me" data for routing (optimized single RPC call)
         const me = await loadMe();
+
+        // Safety check: If profile is deleted, sign out immediately
+        if (me.profile?.deleted_at) {
+          console.log('[Index] Profile is deleted (deleted_at:', me.profile.deleted_at, '), signing out...');
+          await signOut();
+          router.replace('/(onboarding)/welcome');
+          return;
+        }
 
         // Routing logic:
         // 1. If profile.lifecycle_status is 'active' => route to feed

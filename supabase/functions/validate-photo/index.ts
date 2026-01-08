@@ -3,7 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-pawfectly-secret',
 }
 
 serve(async (req) => {
@@ -75,11 +75,24 @@ serve(async (req) => {
 
     // 4. OpenAI Moderation (image) - using omni-moderation-latest
     // Check for NSFW/inappropriate content first. If flagged, reject immediately.
+    const openaiApiKey = Deno.env.get('OPENAI_API_KEY_DEV')
+    if (!openaiApiKey) {
+      console.error(`[validate-photo] Photo ${id}: OPENAI_API_KEY_DEV environment variable is not set`)
+      await updatePhotoStatus(supabaseAdmin, id, 'rejected', 'validation_error', undefined, user_id)
+      return new Response(
+        JSON.stringify({ error: 'OPENAI_API_KEY_DEV environment variable is not set' }), 
+        { 
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
+    }
+
     try {
       const moderationRes = await fetch('https://api.openai.com/v1/moderations', {
         method: 'POST',
         headers: { 
-          'Authorization': `Bearer ${Deno.env.get('OPENAI_API_KEY_DEV')}`,
+          'Authorization': `Bearer ${openaiApiKey}`,
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({ 
@@ -143,7 +156,7 @@ Be strict with screenshot detection: flag any image that shows device UI, app in
     const visionRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 
-        'Authorization': `Bearer ${Deno.env.get('OPENAI_API_KEY_DEV')}`,
+        'Authorization': `Bearer ${openaiApiKey}`,
         'Content-Type': 'application/json' 
       },
       body: JSON.stringify({

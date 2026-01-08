@@ -21,8 +21,8 @@ export interface MeProfile {
   user_id: string;
   display_name: string | null;
   city: string | null;
-  lat: number | null;
-  lng: number | null;
+  latitude: number | null;
+  longitude: number | null;
   dob: string | null;
   gender: string | null;
   lifecycle_status: string;
@@ -89,8 +89,8 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
         user_id: data.profile.user_id,
         display_name: data.profile.display_name,
         city: data.profile.city,
-        lat: data.profile.lat,
-        lng: data.profile.lng,
+        latitude: data.profile.latitude,
+        longitude: data.profile.longitude,
         dob: data.profile.dob,
         gender: data.profile.gender,
         lifecycle_status: data.profile.lifecycle_status,

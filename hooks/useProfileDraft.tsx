@@ -166,12 +166,12 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
     // Load profile data
     if (data.profile) {
       newDraft.human = dbProfileToHumanProfile(data.profile);
-      if (data.profile.city || data.profile.lat || data.profile.lng) {
+      if (data.profile.city || data.profile.latitude || data.profile.longitude) {
         newDraft.location = {
           city: data.profile.city || '',
-          latitude: data.profile.lat || undefined,
-          longitude: data.profile.lng || undefined,
-          useCurrentLocation: !!(data.profile.lat && data.profile.lng),
+          latitude: data.profile.latitude || undefined,
+          longitude: data.profile.longitude || undefined,
+          useCurrentLocation: !!(data.profile.latitude && data.profile.longitude),
         };
       }
     }

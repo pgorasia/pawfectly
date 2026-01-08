@@ -5,8 +5,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  getDogPhotos,
-  getHumanPhotos,
   deletePhoto,
   reorderPhotosAfterDeletion,
 } from '@/services/supabase/photoService';
@@ -14,7 +12,6 @@ import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
 import { pickImage } from '@/services/media/imagePicker';
 import { resizeAndUploadPhoto } from '@/services/media/resizeAndUploadPhoto';
 import { supabase } from '@/services/supabase/supabaseClient';
-import { getCurrentUserId } from '@/services/supabase/photoService';
 import { sendPhotoRejectedNotification } from '@/services/notifications/photoNotifications';
 import type { Photo, BucketType } from '@/types/photo';
 
@@ -66,26 +63,61 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
     setDogBuckets(initialBuckets);
   }, [dogSlots]);
 
-  // Load photos from Supabase
+  // Load all photos from Supabase in a single query, then group client-side
   const refreshPhotos = useCallback(async () => {
     try {
       if (!user?.id) return;
       const userId = user.id;
 
-      // Load dog photos by slot
-      const dogBucketsData: Record<number, PhotoBucketState> = {};
-      for (const slot of dogSlots) {
-        const photos = await getDogPhotos(userId, slot);
-        dogBucketsData[slot] = {
-          photos,
-          isUploading: false,
-          uploadError: null,
-        };
-      }
-      setDogBuckets(dogBucketsData);
+      // Single query: load all photos for user, ordered by dog_slot (nulls first for human) and display_order
+      const { data: allPhotos, error } = await supabase
+        .from('photos')
+        .select('*')
+        .eq('user_id', userId)
+        .order('dog_slot', { ascending: true, nullsFirst: true }) // Human photos (null) come first
+        .order('display_order', { ascending: true, nullsFirst: false })
+        .order('created_at', { ascending: false }); // Fallback for photos without display_order
 
-      // Load human photos
-      const humanPhotos = await getHumanPhotos(userId);
+      if (error) {
+        throw new Error(`Failed to fetch photos: ${error.message}`);
+      }
+
+      const photos = (allPhotos || []) as Photo[];
+
+      // Group photos client-side into buckets
+      const dogBucketsData: Record<number, PhotoBucketState> = {};
+      let humanPhotos: Photo[] = [];
+
+      for (const photo of photos) {
+        if (photo.dog_slot !== null && photo.bucket_type === 'dog') {
+          // Dog photo - group by slot
+          const slot = photo.dog_slot;
+          if (!dogBucketsData[slot]) {
+            dogBucketsData[slot] = {
+              photos: [],
+              isUploading: false,
+              uploadError: null,
+            };
+          }
+          dogBucketsData[slot].photos.push(photo);
+        } else if (photo.dog_slot === null && photo.bucket_type === 'human') {
+          // Human photo
+          humanPhotos.push(photo);
+        }
+      }
+
+      // Initialize empty buckets for dog slots that have no photos
+      dogSlots.forEach((slot) => {
+        if (!dogBucketsData[slot]) {
+          dogBucketsData[slot] = {
+            photos: [],
+            isUploading: false,
+            uploadError: null,
+          };
+        }
+      });
+
+      setDogBuckets(dogBucketsData);
       setHumanBucket({
         photos: humanPhotos,
         isUploading: false,
@@ -94,14 +126,14 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
 
       // Check for human+dog photos (from any bucket)
       // contains_both is computed as: contains_dog && contains_human
-      const allPhotos = Object.values(dogBucketsData).flatMap((b) => b.photos);
-      const hasHumanDog = allPhotos.some((photo) => photo.contains_dog && photo.contains_human) || 
+      const allPhotosArray = Object.values(dogBucketsData).flatMap((b) => b.photos);
+      const hasHumanDog = allPhotosArray.some((photo) => photo.contains_dog && photo.contains_human) || 
                           humanPhotos.some((photo) => photo.contains_dog && photo.contains_human);
       setHasHumanDogPhoto(hasHumanDog);
     } catch (error) {
       console.error('Failed to refresh photos:', error);
     }
-  }, [dogSlots]);
+  }, [dogSlots, user?.id]);
 
   // Load photos on mount and when user changes
   useEffect(() => {
@@ -109,6 +141,83 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
       refreshPhotos();
     }
   }, [user?.id, refreshPhotos]);
+
+  // Debounce timer for realtime updates
+  const refreshDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingPhotoUpdatesRef = useRef<Map<string, Photo>>(new Map());
+
+  // Debounced refresh function that batches rapid updates
+  const debouncedRefresh = useCallback(() => {
+    if (refreshDebounceRef.current) {
+      clearTimeout(refreshDebounceRef.current);
+    }
+    refreshDebounceRef.current = setTimeout(() => {
+      refreshPhotos();
+      pendingPhotoUpdatesRef.current.clear();
+      refreshDebounceRef.current = null;
+    }, 300); // 300ms debounce
+  }, [refreshPhotos]);
+
+  // Patch a single photo in state instead of full refresh (for rapid updates)
+  const patchPhotoInState = useCallback((photo: Photo) => {
+    const slot = photo.dog_slot;
+    const isHuman = slot === null && photo.bucket_type === 'human';
+    const isDog = slot !== null && photo.bucket_type === 'dog';
+
+    if (isDog && slot !== null) {
+      setDogBuckets((prev) => {
+        const bucket = prev[slot];
+        if (!bucket) return prev;
+        
+        const existingIndex = bucket.photos.findIndex((p) => p.id === photo.id);
+        if (existingIndex >= 0) {
+          // Update existing photo
+          const newPhotos = [...bucket.photos];
+          newPhotos[existingIndex] = photo;
+          return {
+            ...prev,
+            [slot]: {
+              ...bucket,
+              photos: newPhotos,
+            },
+          };
+        } else {
+          // New photo - add to end (will be sorted on next full refresh)
+          return {
+            ...prev,
+            [slot]: {
+              ...bucket,
+              photos: [...bucket.photos, photo],
+            },
+          };
+        }
+      });
+    } else if (isHuman) {
+      setHumanBucket((prev) => {
+        const existingIndex = prev.photos.findIndex((p) => p.id === photo.id);
+        if (existingIndex >= 0) {
+          // Update existing photo
+          const newPhotos = [...prev.photos];
+          newPhotos[existingIndex] = photo;
+          return {
+            ...prev,
+            photos: newPhotos,
+          };
+        } else {
+          // New photo - add to end (will be sorted on next full refresh)
+          return {
+            ...prev,
+            photos: [...prev.photos, photo],
+          };
+        }
+      });
+    }
+
+    // Update human+dog flag if needed
+    if (photo.contains_dog && photo.contains_human) {
+      setHasHumanDogPhoto(true);
+    }
+  }, []);
 
   // Set up realtime subscription for photo status changes
   useEffect(() => {
@@ -139,20 +248,33 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
               }
             );
 
-            // Refresh photos to update UI
-            refreshPhotos();
+            // Patch photo immediately for responsive UI
+            patchPhotoInState(updatedPhoto);
+            
+            // Also trigger debounced refresh to ensure consistency
+            debouncedRefresh();
           } else if (updatedPhoto.status !== oldPhoto.status) {
-            // Status changed (approved or pending), refresh to update UI
-            refreshPhotos();
+            // Status changed (approved or pending) - patch immediately
+            patchPhotoInState(updatedPhoto);
+            
+            // Debounce full refresh to batch rapid updates
+            pendingPhotoUpdatesRef.current.set(updatedPhoto.id, updatedPhoto);
+            debouncedRefresh();
+          } else {
+            // Other field changes - patch immediately without debounce
+            patchPhotoInState(updatedPhoto);
           }
         }
       )
       .subscribe();
 
     return () => {
+      if (refreshDebounceRef.current) {
+        clearTimeout(refreshDebounceRef.current);
+      }
       supabase.removeChannel(channel);
     };
-  }, [user?.id, refreshPhotos]);
+  }, [user?.id, refreshPhotos, debouncedRefresh, patchPhotoInState]);
 
   const uploadPhotoToBucket = useCallback(
     async (bucketType: BucketType, dogSlot?: number, imageUri?: string, croppedUri?: string) => {
@@ -175,12 +297,18 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
       }
 
       try {
+        if (!user?.id) {
+          throw new Error('User not authenticated');
+        }
+
         // Use the dedicated photo upload service
+        // Pass userId from AuthContext to avoid network call
         const result = await uploadPhotoWithValidation({
           bucketType,
           dogSlot,
           imageUri, // Pass imageUri if provided (from cropper)
           croppedUri, // Pass croppedUri if provided (already cropped)
+          userId: user.id,
         });
 
         if (!result.success || !result.photo) {
@@ -385,10 +513,13 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         }
 
         // Step 6: Upload the new photo
-        const userId = await getCurrentUserId();
+        // Use userId from AuthContext (no network call)
+        if (!user?.id) {
+          throw new Error('User not authenticated');
+        }
         const uploadResult = await resizeAndUploadPhoto({
           localUri: pickedImage.uri,
-          userId,
+          userId: user.id,
           bucketType,
           dogSlot,
           mimeType: pickedImage.type,

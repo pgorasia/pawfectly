@@ -24,7 +24,7 @@ export default function BlockedUsersScreen() {
     if (!user?.id) return;
 
     try {
-      const users = await getBlockedUsers(user.id);
+      const users = await getBlockedUsers();
       setBlockedUsers(users);
     } catch (error) {
       console.error('[BlockedUsersScreen] Failed to load blocked users:', error);
@@ -63,7 +63,14 @@ export default function BlockedUsersScreen() {
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity onPress={() => {
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              // Navigate to settings if no history
+              router.replace('/(tabs)/account/settings');
+            }
+          }}>
             <AppText variant="body" style={styles.backButton}>
               ← Back
             </AppText>
