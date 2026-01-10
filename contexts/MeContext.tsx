@@ -17,13 +17,27 @@ import {
   dbPreferencesToDraftPreferences,
 } from '@/services/supabase/onboardingService';
 
+/**
+ * Convert date from database format (YYYY-MM-DD) to display format (mm/dd/yyyy)
+ * This is used when loading dates from the database into the MeContext
+ */
+function convertDbToDisplayDate(dbDate: string | null): string | null {
+  if (!dbDate) return null;
+  
+  const parts = dbDate.split('-');
+  if (parts.length !== 3) return dbDate; // Return as-is if not in expected format
+  
+  const [year, month, day] = parts;
+  return `${month}/${day}/${year}`;
+}
+
 export interface MeProfile {
   user_id: string;
   display_name: string | null;
   city: string | null;
   latitude: number | null;
   longitude: number | null;
-  dob: string | null;
+  dob: string | null; // Date in mm/dd/yyyy format (converted from PostgreSQL date YYYY-MM-DD when loaded)
   gender: string | null;
   lifecycle_status: string;
   validation_status: string;
@@ -36,6 +50,11 @@ export interface MeData {
   preferences: {
     'pawsome-pals': Preferences | null;
     'pawfect-match': Preferences | null;
+  };
+  // Raw preference flags from database (used for lane enablement)
+  preferencesRaw: {
+    pals_enabled: boolean;
+    match_enabled: boolean;
   };
   // Minimal photo info (just counts or IDs, not full photo objects)
   photoCounts?: {
@@ -64,6 +83,10 @@ const defaultMe: MeData = {
     'pawsome-pals': null,
     'pawfect-match': null,
   },
+  preferencesRaw: {
+    pals_enabled: false,
+    match_enabled: false,
+  },
 };
 
 const MeContext = createContext<MeContextType | undefined>(undefined);
@@ -91,7 +114,7 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
         city: data.profile.city,
         latitude: data.profile.latitude,
         longitude: data.profile.longitude,
-        dob: data.profile.dob,
+        dob: convertDbToDisplayDate(data.profile.dob),
         gender: data.profile.gender,
         lifecycle_status: data.profile.lifecycle_status,
         validation_status: data.profile.validation_status,
@@ -114,6 +137,17 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       const { connectionStyles, preferences: prefs } = dbPreferencesToDraftPreferences(data.preferences);
       newMe.connectionStyles = connectionStyles;
       newMe.preferences = prefs;
+      // Also store raw preference flags for lane enablement
+      newMe.preferencesRaw = {
+        pals_enabled: data.preferences.pals_enabled ?? false,
+        match_enabled: data.preferences.match_enabled ?? false,
+      };
+    } else {
+      // No preferences yet - keep defaults
+      newMe.preferencesRaw = {
+        pals_enabled: false,
+        match_enabled: false,
+      };
     }
 
     setMe(newMe);

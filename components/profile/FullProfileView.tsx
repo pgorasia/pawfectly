@@ -18,8 +18,9 @@ import { useMe } from '@/contexts/MeContext';
 
 interface FullProfileViewProps {
   payload: ProfileViewPayload;
-  onHeartPress: (source: { type: 'photo' | 'prompt'; refId: string }) => void;
+  onHeartPress?: (source: { type: 'photo' | 'prompt'; refId: string }) => void;
   hasScrolledPastHero?: boolean;
+  readOnly?: boolean;
 }
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -29,6 +30,7 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
   payload,
   onHeartPress,
   hasScrolledPastHero = false,
+  readOnly = false,
 }) => {
   const { me } = useMe();
 
@@ -281,7 +283,7 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
                 key={`photo-${firstPhoto.id}`}
                 photo={firstPhoto}
                 photoUrl={photoUrls.get(firstPhoto.id) || null}
-                onHeartPress={() => onHeartPress({ type: 'photo', refId: firstPhoto.id })}
+                onHeartPress={readOnly ? undefined : () => onHeartPress?.({ type: 'photo', refId: firstPhoto.id })}
               />
             )}
 
@@ -355,7 +357,7 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
               <PromptTile
                 key={prompt.id}
                 prompt={prompt}
-                onHeartPress={() => onHeartPress({ type: 'prompt', refId: prompt.id })}
+                onHeartPress={readOnly ? undefined : () => onHeartPress?.({ type: 'prompt', refId: prompt.id })}
               />
             ))}
 
@@ -365,7 +367,7 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
                 key={photo.id}
                 photo={photo}
                 photoUrl={photoUrls.get(photo.id) || null}
-                onHeartPress={() => onHeartPress({ type: 'photo', refId: photo.id })}
+                onHeartPress={readOnly ? undefined : () => onHeartPress?.({ type: 'photo', refId: photo.id })}
               />
             ))}
           </View>
@@ -381,12 +383,12 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
             </AppText>
           </Card>
           {humanPhotos.map((photo) => (
-            <PhotoTile
-              key={photo.id}
-              photo={photo}
-              photoUrl={photoUrls.get(photo.id) || null}
-              onHeartPress={() => onHeartPress({ type: 'photo', refId: photo.id })}
-            />
+          <PhotoTile
+            key={photo.id}
+            photo={photo}
+            photoUrl={photoUrls.get(photo.id) || null}
+            onHeartPress={readOnly ? undefined : () => onHeartPress?.({ type: 'photo', refId: photo.id })}
+          />
           ))}
         </View>
       )}
@@ -401,7 +403,7 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
 interface PhotoTileProps {
   photo: ProfileViewPayload['photos'][0];
   photoUrl: string | null;
-  onHeartPress: () => void;
+  onHeartPress?: () => void;
 }
 
 const PhotoTile: React.FC<PhotoTileProps> = ({ photo, photoUrl, onHeartPress }) => {
@@ -419,13 +421,15 @@ const PhotoTile: React.FC<PhotoTileProps> = ({ photo, photoUrl, onHeartPress }) 
           <AppText variant="caption">Loading...</AppText>
         </View>
       )}
-      <TouchableOpacity
-        style={styles.heartButton}
-        onPress={onHeartPress}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <MaterialIcons name="favorite-border" size={24} color={Colors.background} />
-      </TouchableOpacity>
+      {onHeartPress && (
+        <TouchableOpacity
+          style={styles.heartButton}
+          onPress={onHeartPress}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <MaterialIcons name="favorite-border" size={24} color={Colors.background} />
+        </TouchableOpacity>
+      )}
     </View>
   );
 };
@@ -433,7 +437,7 @@ const PhotoTile: React.FC<PhotoTileProps> = ({ photo, photoUrl, onHeartPress }) 
 // Prompt Tile Component
 interface PromptTileProps {
   prompt: ProfileViewPayload['prompts'][0];
-  onHeartPress: () => void;
+  onHeartPress?: () => void;
 }
 
 const PromptTile: React.FC<PromptTileProps> = ({ prompt, onHeartPress }) => {
@@ -452,13 +456,15 @@ const PromptTile: React.FC<PromptTileProps> = ({ prompt, onHeartPress }) => {
           {prompt.response_text}
         </AppText>
       </View>
-      <TouchableOpacity
-        style={styles.promptHeartButton}
-        onPress={onHeartPress}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <MaterialIcons name="favorite-border" size={20} color={Colors.primary} />
-      </TouchableOpacity>
+      {onHeartPress && (
+        <TouchableOpacity
+          style={styles.promptHeartButton}
+          onPress={onHeartPress}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <MaterialIcons name="favorite-border" size={20} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
     </Card>
   );
 };

@@ -1,437 +1,936 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, FlatList } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+/**
+ * Messages Screen - Complete Implementation
+ * Features:
+ * - Top lane filter (All/Pals/Match) that filters everything
+ * - Matches carousel + "Liked You" card (always shown if liked_you_count > 0)
+ * - Messages tab with active threads
+ * - Requests tab with Received/Sent sub-tabs (shown when both exist)
+ * - Client-side filtering (no network calls on filter change)
+ * - SWR-like caching with useRef
+ * - Pull-to-refresh
+ * - Error handling with non-blocking banner
+ */
+
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  FlatList,
+  TouchableOpacity,
+  RefreshControl,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
-import { useMe } from '@/contexts/MeContext';
-import { useAuth } from '@/contexts/AuthContext';
-import { ConnectionStyle } from '@/hooks/useProfileDraft';
-import { supabase } from '@/services/supabase/supabaseClient';
-import { dbPreferencesToDraftPreferences } from '@/services/supabase/onboardingService';
-import { Spacing } from '@/constants/spacing';
+import { MatchTile } from '@/components/messages/MatchTile';
+import { MessageRow } from '@/components/messages/MessageRow';
+import { RequestRow } from '@/components/messages/RequestRow';
+import { SentRequestTile } from '@/components/messages/SentRequestTile';
+import { LikedYouPlaceholder } from '@/components/messages/LikedYouPlaceholder';
+import {
+  getMessagesHome,
+  getIncomingRequests,
+  getOrCreateConversation,
+  type MessagesHomeResponse,
+  type IncomingRequest,
+  type Lane,
+  type Match,
+  type Thread,
+  type SentRequest,
+} from '@/services/messages/messagesService';
 import { Colors } from '@/constants/colors';
+import { Spacing } from '@/constants/spacing';
+import { chatEvents, CHAT_EVENTS, type FirstMessageSentData } from '@/utils/chatEvents';
+import { truncatePreview } from '@/utils/chatHelpers';
 
-// Mock data - in production, this would come from Supabase
-interface Match {
-  id: string;
-  name: string;
-  profilePic: string | null;
-  connectionStyle: ConnectionStyle;
-}
+type LaneFilter = 'all' | 'pals' | 'match';
+type TabType = 'messages' | 'requests';
+type RequestsSubTab = 'received' | 'sent';
 
-interface Message {
-  id: string;
-  matchId: string;
-  name: string;
-  profilePic: string | null;
-  lastMessage: string;
-  lastMessageTime: Date;
-  connectionStyle: ConnectionStyle;
-}
-
-const MOCK_MATCHES_PAWSOME: Match[] = [
-  { id: '1', name: 'Alex', profilePic: null, connectionStyle: 'pawsome-pals' },
-  { id: '2', name: 'Jordan', profilePic: null, connectionStyle: 'pawsome-pals' },
-];
-
-const MOCK_MATCHES_PAWFECT: Match[] = [
-  { id: '3', name: 'Sam', profilePic: null, connectionStyle: 'pawfect-match' },
-];
-
-const MOCK_MESSAGES_PAWSOME: Message[] = [
-  {
-    id: '1',
-    matchId: '1',
-    name: 'Taylor',
-    profilePic: null,
-    lastMessage: 'Hey! How are you?',
-    lastMessageTime: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-    connectionStyle: 'pawsome-pals',
-  },
-];
-
-const MOCK_MESSAGES_PAWFECT: Message[] = [
-  {
-    id: '2',
-    matchId: '2',
-    name: 'Casey',
-    profilePic: null,
-    lastMessage: 'Great to match with you!',
-    lastMessageTime: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000), // 1 day ago
-    connectionStyle: 'pawfect-match',
-  },
-];
-
-function formatTimeAgo(date: Date): string {
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
-
-function MatchItem({ match }: { match: Match }) {
-  return (
-    <TouchableOpacity style={styles.matchItem}>
-      <View style={styles.matchAvatar}>
-        <AppText variant="heading" style={styles.matchAvatarText}>
-          {match.name[0]}
-        </AppText>
-      </View>
-      <AppText variant="caption" style={styles.matchName} numberOfLines={1}>
-        {match.name}
-      </AppText>
-    </TouchableOpacity>
-  );
-}
-
-function MessageItem({ message }: { message: Message }) {
-  return (
-    <TouchableOpacity style={styles.messageItem}>
-      <View style={styles.messageAvatar}>
-        <AppText variant="heading" style={styles.messageAvatarText}>
-          {message.name[0]}
-        </AppText>
-      </View>
-      <View style={styles.messageContent}>
-        <View style={styles.messageHeader}>
-          <AppText variant="body" style={styles.messageName}>
-            {message.name}
-          </AppText>
-          <AppText variant="caption" style={styles.messageTime}>
-            {formatTimeAgo(message.lastMessageTime)}
-          </AppText>
-        </View>
-        <AppText variant="caption" style={styles.messagePreview} numberOfLines={1}>
-          {message.lastMessage}
-        </AppText>
-      </View>
-    </TouchableOpacity>
-  );
-}
-
-function MessagesTab({ connectionStyle }: { connectionStyle: ConnectionStyle }) {
-  const isPawsome = connectionStyle === 'pawsome-pals';
-  
-  // Filter matches - only show those without an active chat
-  const matches = isPawsome ? MOCK_MATCHES_PAWSOME : MOCK_MATCHES_PAWFECT;
-  const messages = isPawsome ? MOCK_MESSAGES_PAWSOME : MOCK_MESSAGES_PAWFECT;
-  
-  // Filter out matches that already have messages
-  const matchIdsWithMessages = new Set(messages.map((m) => m.matchId));
-  const newMatches = matches.filter((m) => !matchIdsWithMessages.has(m.id));
-
-  return (
-    <View style={styles.tabContent}>
-      {/* Matches Section */}
-      {newMatches.length > 0 && (
-        <View style={styles.section}>
-          <AppText variant="body" style={styles.sectionTitle}>
-            Matches
-          </AppText>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.matchesContainer}
-          >
-            {newMatches.map((match) => (
-              <MatchItem key={match.id} match={match} />
-            ))}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Messages Section */}
-      <View style={styles.section}>
-        <AppText variant="body" style={styles.sectionTitle}>
-          Messages
-        </AppText>
-        {messages.length > 0 ? (
-          <FlatList
-            data={messages}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => <MessageItem message={item} />}
-            scrollEnabled={false}
-          />
-        ) : (
-          <View style={styles.emptyState}>
-            <AppText variant="body" style={styles.emptyStateText}>
-              No messages yet
-            </AppText>
-          </View>
-        )}
-      </View>
-    </View>
-  );
+interface CachedData {
+  messagesHome: MessagesHomeResponse | null;
+  incomingRequests: IncomingRequest[];
+  timestamp: number;
 }
 
 export default function MessagesScreen() {
-  const { me, updateMe } = useMe();
-  const { user } = useAuth();
-  const hasPawsomePals = me.connectionStyles.includes('pawsome-pals');
-  const hasPawfectMatch = me.connectionStyles.includes('pawfect-match');
-  
-  const [activeTab, setActiveTab] = useState<ConnectionStyle | null>(
-    hasPawsomePals ? 'pawsome-pals' : hasPawfectMatch ? 'pawfect-match' : null
-  );
+  const router = useRouter();
 
-  // Update activeTab when connection styles change
-  useEffect(() => {
-    if (hasPawsomePals) {
-      setActiveTab('pawsome-pals');
-    } else if (hasPawfectMatch) {
-      setActiveTab('pawfect-match');
-    } else {
-      setActiveTab(null);
-    }
-  }, [hasPawsomePals, hasPawfectMatch]);
+  // Top-level lane filter
+  const [laneFilter, setLaneFilter] = useState<LaneFilter>('all');
 
-  // Reconciliation: Sync MeContext with database on focus to reflect latest preferences
-  useFocusEffect(
-    React.useCallback(() => {
-      if (!user?.id) return;
+  // Tab state
+  const [activeTab, setActiveTab] = useState<TabType>('messages');
+  const [requestsSubTab, setRequestsSubTab] = useState<RequestsSubTab>('received');
 
-      const reconcilePreferences = async () => {
-        try {
-          // Fetch latest preferences from database
-          const { data: prefs, error } = await supabase
-            .from('preferences')
-            .select('*')
-            .eq('user_id', user.id)
-            .maybeSingle();
+  // Data state
+  const [messagesHome, setMessagesHome] = useState<MessagesHomeResponse | null>(null);
+  const [incomingRequests, setIncomingRequests] = useState<IncomingRequest[]>([]);
 
-          if (error && error.code !== 'PGRST116') {
-            console.error('[MessagesScreen] Failed to reconcile preferences:', error);
-            return;
+  // Loading and error state
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Cache with useRef for stale-while-revalidate pattern
+  const cacheRef = useRef<CachedData>({
+    messagesHome: null,
+    incomingRequests: [],
+    timestamp: 0,
+  });
+
+  // Track matches that were opened but have no messages yet
+  // This helps restore matches that disappear when ensureConversation is called
+  const openedMatchesRef = useRef<Map<string, Match>>(new Map());
+
+  /**
+   * Load data from server
+   * Uses cache to show stale data immediately, then fetches fresh data
+   */
+  const loadData = useCallback(async (showLoadingSpinner = true) => {
+    try {
+      // Show cached data immediately if available
+      const cache = cacheRef.current;
+      const cacheAge = Date.now() - cache.timestamp;
+      if (cache.messagesHome && cacheAge < 60000) {
+        // Cache is less than 1 minute old
+        setMessagesHome(cache.messagesHome);
+        setIncomingRequests(cache.incomingRequests);
+        setLoading(false);
+      }
+
+      if (showLoadingSpinner && !cache.messagesHome) {
+        setLoading(true);
+      }
+      setError(null);
+
+      // Fetch fresh data in parallel
+      const [homeData, requestsData] = await Promise.all([
+        getMessagesHome().catch((err) => {
+          console.error('[MessagesScreen] getMessagesHome failed:', err);
+          return null;
+        }),
+        getIncomingRequests().catch((err) => {
+          console.error('[MessagesScreen] getIncomingRequests failed:', err);
+          return [];
+        }),
+      ]);
+
+      // Update state with fresh data
+      if (homeData) {
+        // Defensive fix: Restore matches that were opened but have no messages yet
+        // If backend removed a match but conversation has no messages, preserve it in matches
+        const threadsWithMessages = homeData.threads.filter(t => t.last_message_at && t.last_message_at.trim() !== '');
+        const threadsWithoutMessages = homeData.threads.filter(t => !t.last_message_at || t.last_message_at.trim() === '');
+        
+        // Restore matches for opened conversations that have no messages
+        const matchesToRestore: Match[] = [];
+        
+        // Check each opened match - if it has no messages and is not in matches, restore it
+        openedMatchesRef.current.forEach((storedMatch, conversationId) => {
+          // Check if this conversation has messages
+          const hasMessages = threadsWithMessages.some(t => t.conversation_id === conversationId);
+          // Check if it's already in matches
+          const inMatches = homeData.matches.some(m => (m.conversation_id || '') === conversationId);
+          
+          if (!hasMessages && !inMatches) {
+            console.log('[MessagesScreen] Restoring match that disappeared:', conversationId, storedMatch.display_name);
+            matchesToRestore.push(storedMatch);
+          } else if (hasMessages) {
+            // Conversation has messages now - remove from tracking
+            openedMatchesRef.current.delete(conversationId);
           }
-
-          if (prefs) {
-            // Convert DB format to Me format
-            const { connectionStyles, preferences: prefsData } = dbPreferencesToDraftPreferences(prefs);
-            
-            // Always update to ensure MeContext reflects latest DB state
-            // updateMe will handle efficient updates internally
-            updateMe({
-              connectionStyles,
-              preferences: prefsData,
+        });
+        
+        // Convert threads without messages back to matches (if not already tracked)
+        threadsWithoutMessages.forEach(thread => {
+          const alreadyTracked = openedMatchesRef.current.has(thread.conversation_id);
+          const alreadyInMatches = homeData.matches.some(m => (m.conversation_id || '') === thread.conversation_id);
+          
+          if (!alreadyTracked && !alreadyInMatches) {
+            matchesToRestore.push({
+              conversation_id: thread.conversation_id,
+              user_id: thread.user_id,
+              lane: thread.lane,
+              connected_at: thread.last_message_at || new Date().toISOString(),
+              display_name: thread.display_name,
+              dog_name: thread.dog_name,
+              hero_storage_path: thread.hero_storage_path,
             });
           }
-        } catch (error) {
-          console.error('[MessagesScreen] Error reconciling preferences:', error);
+        });
+        
+        if (matchesToRestore.length > 0 || threadsWithoutMessages.length > 0) {
+          console.log('[MessagesScreen] Restoring matches without messages:', {
+            matchesToRestore: matchesToRestore.length,
+            threadsWithoutMessages: threadsWithoutMessages.length,
+          });
+          
+          // Merge with existing matches, avoiding duplicates
+          const existingMatchIds = new Set(homeData.matches.map(m => m.conversation_id || m.user_id));
+          const newMatches = matchesToRestore.filter(m => 
+            !existingMatchIds.has(m.conversation_id || m.user_id)
+          );
+          
+          const correctedData = {
+            ...homeData,
+            matches: [...homeData.matches, ...newMatches],
+            threads: threadsWithMessages, // Only threads with messages
+          };
+          
+          setMessagesHome(correctedData);
+          cacheRef.current.messagesHome = correctedData;
+        } else {
+          setMessagesHome(homeData);
+          cacheRef.current.messagesHome = homeData;
         }
-      };
+      }
 
-      reconcilePreferences();
-    }, [user?.id, updateMe])
+      setIncomingRequests(requestsData);
+      cacheRef.current.incomingRequests = requestsData;
+      cacheRef.current.timestamp = Date.now();
+
+      setLoading(false);
+      setRefreshing(false);
+    } catch (err) {
+      console.error('[MessagesScreen] loadData exception:', err);
+      setError('Failed to load messages. Pull to refresh.');
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  // Load data on screen focus
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
   );
 
-  // If only one connection style, show it directly
-  if (!hasPawsomePals && !hasPawfectMatch) {
-    return (
-      <ScreenContainer>
-        <View style={styles.emptyContainer}>
-          <AppText variant="heading" style={styles.emptyTitle}>
-            No Connection Styles
-          </AppText>
-          <AppText variant="body" style={styles.emptySubtitle}>
-            Please set up your connection preferences first.
-          </AppText>
-        </View>
-      </ScreenContainer>
-    );
-  }
+  /**
+   * Listen for first message events from chat screen
+   * Move conversation from Matches to Messages ONLY when message is actually sent
+   */
+  useEffect(() => {
+    const handleFirstMessage = (data: FirstMessageSentData) => {
+      console.log('[MessagesScreen] FIRST_MESSAGE_SENT event received:', data);
+      console.log('[MessagesScreen] This event should only fire after user sends a message');
 
-  if (hasPawsomePals && !hasPawfectMatch) {
-    return (
-      <ScreenContainer>
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-          <MessagesTab connectionStyle="pawsome-pals" />
-        </ScrollView>
-      </ScreenContainer>
-    );
-  }
+      setMessagesHome(prev => {
+        if (!prev) {
+          console.log('[MessagesScreen] No messagesHome data to update');
+          return prev;
+        }
 
-  if (!hasPawsomePals && hasPawfectMatch) {
-    return (
-      <ScreenContainer>
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-          <MessagesTab connectionStyle="pawfect-match" />
-        </ScrollView>
-      </ScreenContainer>
-    );
-  }
+        // Find the match by conversation_id first, then by user_id as fallback
+        let matchIndex = prev.matches.findIndex(m => 
+          m.conversation_id && m.conversation_id === data.conversationId
+        );
+        
+        // If not found by conversation_id, try by peerUserId
+        if (matchIndex === -1 && data.peerUserId) {
+          matchIndex = prev.matches.findIndex(m => m.user_id === data.peerUserId);
+        }
 
-  // Both connection styles - show tabs
-  return (
-    <ScreenContainer>
-      <View style={styles.tabBar}>
+        if (matchIndex === -1) {
+          console.log('[MessagesScreen] Match not found for conversation:', data.conversationId, 'peerUserId:', data.peerUserId);
+          console.log('[MessagesScreen] Current matches:', prev.matches.map(m => ({ user_id: m.user_id, conversation_id: m.conversation_id })));
+          return prev;
+        }
+
+        const match = prev.matches[matchIndex];
+        console.log('[MessagesScreen] Moving match to messages:', {
+          match_user_id: match.user_id,
+          conversation_id: data.conversationId,
+        });
+
+        // Remove from opened matches tracking (message was sent successfully)
+        openedMatchesRef.current.delete(data.conversationId);
+        console.log('[MessagesScreen] Removed from opened matches tracking (message sent):', data.conversationId);
+
+        // Create a new thread from the match
+        const newThread: Thread = {
+          conversation_id: data.conversationId, // Use the real conversation_id from DB
+          user_id: match.user_id,
+          lane: match.lane,
+          last_message_at: data.sentAt, // Must have last_message_at to appear in Messages
+          preview: truncatePreview(data.messageText),
+          unread_count: 0, // We sent it
+          display_name: match.display_name,
+          dog_name: match.dog_name,
+          hero_storage_path: match.hero_storage_path,
+        };
+
+        // Remove from matches, add to threads
+        const newMatches = [...prev.matches];
+        newMatches.splice(matchIndex, 1);
+
+        const newThreads = [newThread, ...prev.threads]; // Add to top
+
+        console.log('[MessagesScreen] Successfully moved match to messages. Matches remaining:', newMatches.length);
+
+        return {
+          ...prev,
+          matches: newMatches,
+          threads: newThreads,
+        };
+      });
+
+      // Switch to Messages tab to show the new thread
+      setActiveTab('messages');
+    };
+
+    chatEvents.on(CHAT_EVENTS.FIRST_MESSAGE_SENT, handleFirstMessage);
+
+    return () => {
+      chatEvents.off(CHAT_EVENTS.FIRST_MESSAGE_SENT, handleFirstMessage);
+    };
+  }, []);
+
+  // Pull-to-refresh handler
+  const handleRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadData(false);
+  }, [loadData]);
+
+  /**
+   * Client-side filtering functions
+   * No network calls - filters cached data only
+   */
+  const filterByLane = <T extends { lane: Lane }>(items: T[]): T[] => {
+    if (laneFilter === 'all') return items;
+    return items.filter((item) => item.lane === laneFilter);
+  };
+
+  // Filtered data
+  const filteredMatches = messagesHome ? filterByLane(messagesHome.matches) : [];
+  // Filter threads - only include threads that have messages (have last_message_at)
+  // This prevents conversations without messages from appearing in Messages tab
+  const allThreads = messagesHome ? filterByLane(messagesHome.threads) : [];
+  const filteredThreads = allThreads.filter(t => t.last_message_at && t.last_message_at.trim() !== '');
+  const filteredSentRequests = messagesHome ? filterByLane(messagesHome.sent_requests) : [];
+  const filteredIncomingRequests = filterByLane(incomingRequests);
+
+  // Sort threads by last_message_at (latest first)
+  const sortedThreads = [...filteredThreads].sort((a, b) => {
+    const timeA = new Date(a.last_message_at).getTime();
+    const timeB = new Date(b.last_message_at).getTime();
+    return timeB - timeA; // Descending (latest first)
+  });
+
+  // Sort sent requests by created_at (latest first)
+  const sortedSentRequests = [...filteredSentRequests].sort((a, b) => {
+    const timeA = new Date(a.created_at).getTime();
+    const timeB = new Date(b.created_at).getTime();
+    return timeB - timeA; // Descending (latest first)
+  });
+
+  // Sort incoming requests by created_at (latest first)
+  const sortedIncomingRequests = [...filteredIncomingRequests].sort((a, b) => {
+    const timeA = new Date(a.created_at).getTime();
+    const timeB = new Date(b.created_at).getTime();
+    return timeB - timeA; // Descending (latest first)
+  });
+
+  // Compute counts for badges
+  // Unread count = number of threads with unread messages, not total count of unread messages
+  const totalUnreadCount = sortedThreads.filter(t => (t.unread_count || 0) > 0).length;
+  const incomingRequestsCount = sortedIncomingRequests.length;
+
+  /**
+   * Navigation handlers
+   */
+  const handleMatchPress = async (match: Match) => {
+    try {
+      console.log('[MessagesScreen] Match pressed:', {
+        user_id: match.user_id,
+        conversation_id: match.conversation_id,
+        display_name: match.display_name,
+      });
+
+      // Step 1: Ensure conversation exists and get its UUID
+      let conversationId: string;
+      
+      if (match.conversation_id) {
+        // If match already has conversation_id, use it
+        conversationId = match.conversation_id;
+      } else {
+        // Otherwise, call getOrCreateConversation to get/create one
+        const result = await getOrCreateConversation(match.user_id, match.lane);
+        conversationId = result.conversation_id;
+        
+        // Track this match as opened but not yet messaged
+        // Store the match data so we can restore it if user closes without sending
+        openedMatchesRef.current.set(conversationId, {
+          ...match,
+          conversation_id: conversationId, // Store with new conversation_id
+        });
+        console.log('[MessagesScreen] Tracked opened match (no message yet):', conversationId, match.display_name);
+      }
+
+      // Step 2: Navigate with UUID and peer info for header
+      router.push({
+        pathname: '/messages/[conversationId]',
+        params: {
+          conversationId, // Always a real UUID
+          peerName: match.display_name,
+          peerPhotoPath: match.hero_storage_path || '',
+          peerUserId: match.user_id, // For profile view
+        },
+      });
+    } catch (error) {
+      console.error('[MessagesScreen] Failed to open conversation:', error);
+      Alert.alert('Error', 'Failed to open conversation. Please try again.');
+    }
+  };
+
+  const handleThreadPress = (item: Thread | SentRequest | IncomingRequest) => {
+    router.push({
+      pathname: '/messages/[conversationId]',
+      params: {
+        conversationId: item.conversation_id,
+        peerName: item.display_name,
+        peerPhotoPath: item.hero_storage_path || '',
+        peerUserId: item.user_id,
+      },
+    });
+  };
+
+  const handleRequestPress = (conversationId: string) => {
+    router.push(`/messages/request/${conversationId}`);
+  };
+
+  const handleLikedYouPress = () => {
+    // Navigate to Liked You tab
+    router.push('/liked-you');
+  };
+
+  /**
+   * Segmented control for lane filter
+   */
+  const renderLaneFilter = () => (
+    <View style={styles.laneFilterContainer}>
+      <TouchableOpacity
+        style={[styles.laneFilterButton, laneFilter === 'all' && styles.laneFilterButtonActive]}
+        onPress={() => setLaneFilter('all')}
+        activeOpacity={0.7}
+      >
+        <AppText
+          variant="body"
+          style={[styles.laneFilterText, laneFilter === 'all' && styles.laneFilterTextActive]}
+        >
+          All
+        </AppText>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.laneFilterButton, laneFilter === 'pals' && styles.laneFilterButtonActive]}
+        onPress={() => setLaneFilter('pals')}
+        activeOpacity={0.7}
+      >
+        <AppText
+          variant="body"
+          style={[styles.laneFilterText, laneFilter === 'pals' && styles.laneFilterTextActive]}
+        >
+          Pals
+        </AppText>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.laneFilterButton, laneFilter === 'match' && styles.laneFilterButtonActive]}
+        onPress={() => setLaneFilter('match')}
+        activeOpacity={0.7}
+      >
+        <AppText
+          variant="body"
+          style={[styles.laneFilterText, laneFilter === 'match' && styles.laneFilterTextActive]}
+        >
+          Match
+        </AppText>
+      </TouchableOpacity>
+    </View>
+  );
+
+  /**
+   * Matches section (horizontal carousel + liked you card)
+   * Always show "X people want to connect" card if liked_you_count > 0
+   */
+  const renderMatchesSection = () => {
+    const hasMatches = filteredMatches.length > 0;
+    const hasLikedYou = messagesHome && messagesHome.liked_you_count > 0;
+
+    // Don't render section if nothing to show
+    if (!hasMatches && !hasLikedYou) {
+      return null;
+    }
+
+    return (
+      <View style={styles.section}>
+        {/* Always show liked you card if count > 0 */}
+        {hasLikedYou && (
+          <LikedYouPlaceholder
+            count={messagesHome.liked_you_count}
+            onPress={handleLikedYouPress}
+          />
+        )}
+
+        {/* Show matches carousel if there are matches */}
+        {hasMatches && (
+          <>
+            <AppText variant="body" style={styles.sectionTitle}>
+              Matches
+            </AppText>
+            <FlatList
+              horizontal
+              data={filteredMatches}
+              keyExtractor={(item) => item.user_id}
+              renderItem={({ item }) => (
+                <MatchTile match={item} onPress={() => handleMatchPress(item)} />
+              )}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.matchesContent}
+            />
+          </>
+        )}
+      </View>
+    );
+  };
+
+  /**
+   * Requests sub-tabs (Received / Sent)
+   * Only show tabs if both have entries
+   */
+  const renderRequestsSubTabs = () => {
+    const hasReceived = sortedIncomingRequests.length > 0;
+    const hasSent = sortedSentRequests.length > 0;
+
+    // Don't show tabs if only one type exists
+    if (!hasReceived || !hasSent) {
+      return null;
+    }
+
+    return (
+      <View style={styles.subTabsContainer}>
         <TouchableOpacity
-          style={[styles.tab, activeTab === 'pawsome-pals' && styles.tabActive]}
-          onPress={() => setActiveTab('pawsome-pals')}
+          style={[styles.subTab, requestsSubTab === 'received' && styles.subTabActive]}
+          onPress={() => setRequestsSubTab('received')}
+          activeOpacity={0.7}
         >
           <AppText
-            variant="body"
-            style={[
-              styles.tabText,
-              activeTab === 'pawsome-pals' && styles.tabTextActive,
-            ]}
+            variant="caption"
+            style={[styles.subTabText, requestsSubTab === 'received' && styles.subTabTextActive]}
           >
-            🐾 Pawsome Pals
+            Received ({sortedIncomingRequests.length})
           </AppText>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tab, activeTab === 'pawfect-match' && styles.tabActive]}
-          onPress={() => setActiveTab('pawfect-match')}
+          style={[styles.subTab, requestsSubTab === 'sent' && styles.subTabActive]}
+          onPress={() => setRequestsSubTab('sent')}
+          activeOpacity={0.7}
         >
           <AppText
-            variant="body"
-            style={[
-              styles.tabText,
-              activeTab === 'pawfect-match' && styles.tabTextActive,
-            ]}
+            variant="caption"
+            style={[styles.subTabText, requestsSubTab === 'sent' && styles.subTabTextActive]}
           >
-            💛 Pawfect Match
+            Sent ({sortedSentRequests.length})
           </AppText>
         </TouchableOpacity>
       </View>
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        {activeTab && <MessagesTab connectionStyle={activeTab} />}
-      </ScrollView>
+    );
+  };
+
+  /**
+   * Messages/Requests tabs
+   */
+  const renderTabs = () => (
+    <View style={styles.tabsContainer}>
+      <TouchableOpacity
+        style={[styles.tab, activeTab === 'messages' && styles.tabActive]}
+        onPress={() => setActiveTab('messages')}
+        activeOpacity={0.7}
+      >
+        <AppText variant="body" style={[styles.tabText, activeTab === 'messages' && styles.tabTextActive]}>
+          Messages
+        </AppText>
+        {totalUnreadCount > 0 && (
+          <View style={styles.badge}>
+            <AppText variant="caption" style={styles.badgeText}>
+              {totalUnreadCount}
+            </AppText>
+          </View>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.tab, activeTab === 'requests' && styles.tabActive]}
+        onPress={() => setActiveTab('requests')}
+        activeOpacity={0.7}
+      >
+        <AppText variant="body" style={[styles.tabText, activeTab === 'requests' && styles.tabTextActive]}>
+          {incomingRequestsCount > 0 ? `${incomingRequestsCount} Requests` : 'Requests'}
+        </AppText>
+      </TouchableOpacity>
+    </View>
+  );
+
+  /**
+   * Messages tab content
+   */
+  const renderMessagesContent = () => {
+    if (sortedThreads.length === 0) {
+      return (
+        <View style={styles.emptyState}>
+          <AppText variant="body" style={styles.emptyStateText}>
+            No messages yet
+          </AppText>
+          <AppText variant="caption" style={styles.emptyStateSubtext}>
+            {laneFilter === 'all'
+              ? 'Start chatting with your matches!'
+              : `No ${laneFilter === 'pals' ? 'Pals' : 'Match'} messages`}
+          </AppText>
+        </View>
+      );
+    }
+
+    return (
+      <FlatList
+        data={sortedThreads}
+        keyExtractor={(item) => item.conversation_id}
+        renderItem={({ item }) => (
+          <MessageRow thread={item} onPress={() => handleThreadPress(item)} />
+        )}
+        scrollEnabled={false}
+      />
+    );
+  };
+
+  /**
+   * Requests tab content (with Received/Sent sub-tabs)
+   */
+  const renderRequestsContent = () => {
+    const hasReceived = sortedIncomingRequests.length > 0;
+    const hasSent = sortedSentRequests.length > 0;
+
+    // If neither, show empty state
+    if (!hasReceived && !hasSent) {
+      return (
+        <View style={styles.emptyState}>
+          <AppText variant="body" style={styles.emptyStateText}>
+            No requests
+          </AppText>
+          <AppText variant="caption" style={styles.emptyStateSubtext}>
+            {laneFilter === 'all'
+              ? 'New connection requests will appear here'
+              : `No ${laneFilter === 'pals' ? 'Pals' : 'Match'} requests`}
+          </AppText>
+        </View>
+      );
+    }
+
+    // If only received, show received list
+    if (hasReceived && !hasSent) {
+      return (
+        <FlatList
+          data={sortedIncomingRequests}
+          keyExtractor={(item) => item.conversation_id}
+          renderItem={({ item }) => (
+            <RequestRow request={item} onPress={() => handleRequestPress(item.conversation_id)} />
+          )}
+          scrollEnabled={false}
+        />
+      );
+    }
+
+    // If only sent, show sent list
+    if (!hasReceived && hasSent) {
+      return (
+        <FlatList
+          data={sortedSentRequests}
+          keyExtractor={(item) => item.conversation_id}
+          renderItem={({ item }) => (
+            <RequestRow
+              request={{
+                ...item,
+                display_name: item.display_name,
+                preview: 'Pending...',
+              }}
+              onPress={() => handleThreadPress(item)}
+            />
+          )}
+          scrollEnabled={false}
+        />
+      );
+    }
+
+    // Both exist, show tabs and active list
+    return (
+      <>
+        {renderRequestsSubTabs()}
+        {requestsSubTab === 'received' ? (
+          <FlatList
+            data={sortedIncomingRequests}
+            keyExtractor={(item) => item.conversation_id}
+            renderItem={({ item }) => (
+              <RequestRow request={item} onPress={() => handleRequestPress(item.conversation_id)} />
+            )}
+            scrollEnabled={false}
+          />
+        ) : (
+          <FlatList
+            data={sortedSentRequests}
+            keyExtractor={(item) => item.conversation_id}
+            renderItem={({ item }) => (
+              <RequestRow
+                request={{
+                  ...item,
+                  display_name: item.display_name,
+                  preview: 'Pending...',
+                }}
+                onPress={() => handleThreadPress(item)}
+              />
+            )}
+            scrollEnabled={false}
+          />
+        )}
+      </>
+    );
+  };
+
+  /**
+   * Error banner (non-blocking)
+   */
+  const renderErrorBanner = () => {
+    if (!error) return null;
+
+    return (
+      <View style={styles.errorBanner}>
+        <AppText variant="caption" style={styles.errorText}>
+          {error}
+        </AppText>
+        <TouchableOpacity onPress={() => setError(null)}>
+          <AppText variant="caption" style={styles.errorDismiss}>
+            Dismiss
+          </AppText>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  return (
+    <ScreenContainer>
+      {/* Top Lane Filter */}
+      {renderLaneFilter()}
+
+      {/* Error Banner */}
+      {renderErrorBanner()}
+
+      {/* Main Content */}
+      {loading && !messagesHome ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <AppText variant="caption" style={styles.loadingText}>
+            Loading messages...
+          </AppText>
+        </View>
+      ) : (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Matches Section */}
+          {renderMatchesSection()}
+
+          {/* Messages/Requests Tabs */}
+          {renderTabs()}
+
+          {/* Tab Content */}
+          {activeTab === 'messages' ? renderMessagesContent() : renderRequestsContent()}
+        </ScrollView>
+      )}
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollView: {
+  // Lane filter (top segmented control)
+  laneFilterContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
+    backgroundColor: Colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+  },
+  laneFilterButton: {
+    flex: 1,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: 20,
+    backgroundColor: 'rgba(31, 41, 55, 0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  laneFilterButtonActive: {
+    backgroundColor: Colors.primary,
+  },
+  laneFilterText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+    opacity: 0.7,
+  },
+  laneFilterTextActive: {
+    color: Colors.background,
+    opacity: 1,
+  },
+
+  // Error banner
+  errorBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+  },
+  errorText: {
+    color: '#991B1B',
     flex: 1,
   },
-  content: {
-    padding: Spacing.lg,
-    paddingBottom: Spacing.xl,
+  errorDismiss: {
+    color: '#991B1B',
+    fontWeight: '600',
   },
-  emptyContainer: {
+
+  // Loading state
+  loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: Spacing.xl,
+    gap: Spacing.md,
   },
-  emptyTitle: {
+  loadingText: {
+    opacity: 0.6,
+  },
+
+  // Scroll view
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: Spacing.xl,
+  },
+
+  // Sections
+  section: {
+    marginBottom: Spacing.lg,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
     marginBottom: Spacing.md,
-    textAlign: 'center',
+    paddingHorizontal: Spacing.lg,
   },
-  emptySubtitle: {
-    textAlign: 'center',
+
+  // Matches
+  matchesContent: {
+    paddingHorizontal: Spacing.lg,
+  },
+
+  // Sub-tabs (for Requests)
+  subTabsContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    gap: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+    marginBottom: Spacing.sm,
+  },
+  subTab: {
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    borderRadius: 16,
+    backgroundColor: 'rgba(31, 41, 55, 0.05)',
+  },
+  subTabActive: {
+    backgroundColor: Colors.primary + '20',
+  },
+  subTabText: {
+    fontSize: 13,
+    fontWeight: '500',
     opacity: 0.7,
   },
-  tabBar: {
+  subTabTextActive: {
+    opacity: 1,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+
+  // Tabs
+  tabsContainer: {
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(31, 41, 55, 0.1)',
     paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   tab: {
     flex: 1,
     paddingVertical: Spacing.md,
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
+    gap: Spacing.xs,
   },
   tabActive: {
     borderBottomColor: Colors.primary,
   },
   tabText: {
-    opacity: 0.5,
+    fontSize: 15,
+    fontWeight: '500',
+    opacity: 0.6,
   },
   tabTextActive: {
     opacity: 1,
-    fontWeight: '600',
+    fontWeight: '700',
     color: Colors.primary,
   },
-  tabContent: {
-    flex: 1,
-  },
-  section: {
-    marginBottom: Spacing.xl,
-  },
-  sectionTitle: {
-    fontWeight: '600',
-    marginBottom: Spacing.md,
-  },
-  matchesContainer: {
-    gap: Spacing.md,
-    paddingRight: Spacing.lg,
-  },
-  matchItem: {
-    alignItems: 'center',
-    marginRight: Spacing.md,
-    width: 80,
-  },
-  matchAvatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+  badge: {
     backgroundColor: Colors.primary,
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    paddingHorizontal: 8,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.xs,
   },
-  matchAvatarText: {
+  badgeText: {
     color: Colors.background,
-    fontSize: 20,
+    fontSize: 11,
+    fontWeight: '700',
   },
-  matchName: {
-    textAlign: 'center',
-    fontSize: 12,
-  },
-  messageItem: {
-    flexDirection: 'row',
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
-  },
-  messageAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: Colors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: Spacing.md,
-  },
-  messageAvatarText: {
-    color: Colors.background,
-    fontSize: 18,
-  },
-  messageContent: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  messageHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.xs,
-  },
-  messageName: {
-    fontWeight: '600',
-  },
-  messageTime: {
-    opacity: 0.6,
-  },
-  messagePreview: {
-    opacity: 0.7,
-  },
+
+  // Empty state
   emptyState: {
-    paddingVertical: Spacing.xl,
+    paddingVertical: Spacing.xl * 2,
+    paddingHorizontal: Spacing.xl,
     alignItems: 'center',
   },
   emptyStateText: {
+    fontSize: 16,
+    fontWeight: '600',
     opacity: 0.5,
+    marginBottom: Spacing.sm,
+  },
+  emptyStateSubtext: {
+    fontSize: 14,
+    opacity: 0.4,
+    textAlign: 'center',
   },
 });

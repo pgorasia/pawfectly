@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput, AppState, AppStateStatus } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
@@ -248,7 +248,17 @@ export default function PreferencesScreen() {
   const [activeTab, setActiveTab] = useState<PreferencesTab>('pawsome-pals');
   const isEditMode = me.profile?.lifecycle_status === 'active';
   const hasUnsavedChanges = useRef(false);
-  const appState = useRef(AppState.currentState);
+  const isSaving = useRef(false); // Prevent duplicate saves
+  
+  // Use refs to capture latest values without triggering re-renders
+  const selectedStylesRef = useRef(selectedStyles);
+  const preferencesRef = useRef(draft.preferences);
+  
+  // Update refs when values change
+  useEffect(() => {
+    selectedStylesRef.current = selectedStyles;
+    preferencesRef.current = draft.preferences;
+  }, [selectedStyles, draft.preferences]);
   
   // Set initial active tab based on selected styles
   useEffect(() => {
@@ -277,78 +287,63 @@ export default function PreferencesScreen() {
 
   const canSave = selectedStyles.length > 0;
 
-  // Auto-save function
-  const autoSave = useCallback(async () => {
-    if (!user?.id || !hasUnsavedChanges.current || selectedStyles.length === 0) return;
+  // Save function - only called when navigating away
+  // Uses refs to avoid recreating the callback on every change
+  const savePreferences = useCallback(async () => {
+    const currentStyles = selectedStylesRef.current;
+    const currentPrefs = preferencesRef.current;
+    
+    // Prevent duplicate saves
+    if (isSaving.current || !user?.id || !hasUnsavedChanges.current || currentStyles.length === 0) {
+      return;
+    }
+    
+    isSaving.current = true;
+    console.log('[PreferencesScreen] 💾 Saving preferences to database...', {
+      selectedStyles: currentStyles,
+      palsEnabled: currentStyles.includes('pawsome-pals'),
+      matchEnabled: currentStyles.includes('pawfect-match'),
+    });
     
     try {
       // Update MeContext optimistically (server cache)
       updateMe({
-        connectionStyles: selectedStyles,
-        preferences: draft.preferences,
+        connectionStyles: currentStyles,
+        preferences: currentPrefs,
+        preferencesRaw: {
+          pals_enabled: currentStyles.includes('pawsome-pals'),
+          match_enabled: currentStyles.includes('pawfect-match'),
+        },
       });
 
-      // Save to database
-      await updatePreferencesData(user.id, selectedStyles, draft.preferences);
+      // Save to database (batch all changes)
+      await updatePreferencesData(user.id, currentStyles, currentPrefs);
+      
       hasUnsavedChanges.current = false;
+      console.log('[PreferencesScreen] ✅ Preferences saved successfully');
     } catch (error) {
-      console.error('[PreferencesScreen] Failed to auto-save preferences:', error);
+      console.error('[PreferencesScreen] ❌ Failed to save preferences:', error);
+    } finally {
+      isSaving.current = false;
     }
-  }, [user?.id, selectedStyles, draft.preferences, updateMe]);
+  }, [user?.id, updateMe]);
 
-  // Auto-save on app state change (background/foreground)
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
-      if (
-        appState.current.match(/active/) &&
-        nextAppState.match(/inactive|background/)
-      ) {
-        // App is going to background - save
-        autoSave();
-      }
-      appState.current = nextAppState;
-    });
-
-    return () => {
-      subscription.remove();
-    };
-  }, [autoSave]);
-
-  // Auto-save when navigating away (using useFocusEffect cleanup)
+  // Save when navigating away from the screen
   useFocusEffect(
     useCallback(() => {
+      // On focus: reset saving flag
+      isSaving.current = false;
+      
+      // On blur (navigating away): save all changes
       return () => {
-        // Component is losing focus (navigating away) - save
-        autoSave();
+        savePreferences();
       };
-    }, [autoSave])
+    }, [savePreferences])
   );
 
-  // Auto-save on unmount (back button, etc.)
-  useEffect(() => {
-    return () => {
-      autoSave();
-    };
-  }, [autoSave]);
-
   const handleSave = async () => {
-    if (!user?.id) return;
-
-    try {
-      // Update MeContext optimistically (server cache)
-      updateMe({
-        connectionStyles: selectedStyles,
-        preferences: draft.preferences,
-      });
-
-      // Save to database
-      await updatePreferencesData(user.id, selectedStyles, draft.preferences);
-      router.back();
-    } catch (error) {
-      console.error('[PreferencesScreen] Failed to save preferences:', error);
-      // Still go back even if save fails
-      router.back();
-    }
+    await savePreferences();
+    router.back();
   };
 
   return (

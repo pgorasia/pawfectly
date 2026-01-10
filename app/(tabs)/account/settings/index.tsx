@@ -12,12 +12,14 @@ import { setProfileHidden } from '@/services/profile/statusRepository';
 import { supabase } from '@/services/supabase/supabaseClient';
 import { deleteAccountPermanently } from '@/services/account/settingsService';
 import { useMe } from '@/contexts/MeContext';
+import { resetDislikes, clearDislikeOutbox, markLanesForRefresh } from '@/services/feed/feedService';
+import { ResetDislikesModal } from '@/components/account/ResetDislikesModal';
 
 export default function SettingsScreen() {
   const router = useRouter();
   const segments = useSegments();
   const { signOut, user } = useAuth();
-  const { reset: resetMeCache } = useMe();
+  const { me, reset: resetMeCache } = useMe();
   const { setDeletingAccount } = useAuthSessionStore();
   const [hideProfile, setHideProfile] = useState(false);
   const [loadingHideProfile, setLoadingHideProfile] = useState(true);
@@ -27,6 +29,8 @@ export default function SettingsScreen() {
   const [showPermanentDeleteModal, setShowPermanentDeleteModal] = useState(false);
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState('');
   const [deletingPermanently, setDeletingPermanently] = useState(false);
+  const [showResetDislikesModal, setShowResetDislikesModal] = useState(false);
+  const [resettingDislikes, setResettingDislikes] = useState(false);
 
   // Load current is_hidden status
   useEffect(() => {
@@ -156,6 +160,47 @@ export default function SettingsScreen() {
     setPermanentDeleteConfirm('');
   };
 
+  const handleResetDislikes = async (lanes: Array<'pals' | 'match'>) => {
+    if (resettingDislikes) return;
+
+    setResettingDislikes(true);
+    try {
+      // CRITICAL: Clear pending outbox events BEFORE calling reset
+      // This prevents re-applying suppressions after reset
+      await clearDislikeOutbox(lanes);
+      
+      // Reset dislikes on the server
+      await resetDislikes(lanes);
+      
+      // Mark lanes for refresh so feed screen clears their state
+      await markLanesForRefresh(lanes);
+      
+      setShowResetDislikesModal(false);
+      Alert.alert(
+        'Success', 
+        'Dislikes have been reset. The feed will refresh automatically.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              // Navigate back to feed - it will refresh on focus
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/(tabs)/index');
+              }
+            }
+          }
+        ]
+      );
+    } catch (error: any) {
+      console.error('[SettingsScreen] Failed to reset dislikes:', error);
+      Alert.alert('Error', error.message || 'Failed to reset dislikes. Please try again.');
+    } finally {
+      setResettingDislikes(false);
+    }
+  };
+
   const settingsItems = [
     {
       id: 'hide',
@@ -190,6 +235,13 @@ export default function SettingsScreen() {
         : 'View and manage your subscription',
       type: 'navigation' as const,
       onPress: () => router.push('/(tabs)/account/settings/subscription'),
+    },
+    {
+      id: 'resetDislikes',
+      title: 'Reset Dislikes',
+      subtitle: 'Clear your rejected profiles and see them again',
+      type: 'navigation' as const,
+      onPress: () => setShowResetDislikesModal(true),
     },
     {
       id: 'legal',
@@ -339,6 +391,16 @@ export default function SettingsScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Reset Dislikes Modal */}
+      <ResetDislikesModal
+        visible={showResetDislikesModal}
+        onClose={() => setShowResetDislikesModal(false)}
+        onSubmit={handleResetDislikes}
+        loading={resettingDislikes}
+        palsEnabled={me.preferencesRaw.pals_enabled}
+        matchEnabled={me.preferencesRaw.match_enabled}
+      />
     </ScreenContainer>
   );
 }

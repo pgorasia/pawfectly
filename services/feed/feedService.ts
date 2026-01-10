@@ -9,30 +9,23 @@
 
 import { supabase } from '../supabase/supabaseClient';
 import type { ProfileViewPayload, FeedCursor } from '@/types/feed';
+import { publicPhotoUrl } from '@/utils/photoUrls';
+import storage from '@/services/storage/storage';
 
 /**
  * Builds a public URL for a hero photo from Supabase Storage
- * Returns null if bucket type or storage path is missing
- * This is a pure function that does not make any database calls
+ * Returns null if storage path is missing
  * 
- * Note: The actual storage bucket name is "photos" (not "human" or "dog").
- * The bucket_type field is metadata indicating which type of photo it is.
+ * Note: The bucket_type parameter is kept for backward compatibility but is not used.
+ * All photos are stored in the single "photos" bucket.
+ * 
+ * @deprecated Use publicPhotoUrl from @/utils/photoUrls directly instead
  */
 export function buildHeroPhotoUrl(
   bucketType: string | null | undefined,
   storagePath: string | null | undefined
 ): string | null {
-  if (!storagePath) {
-    return null;
-  }
-
-  // The actual Supabase Storage bucket is always "photos"
-  // bucketType is just metadata (human/dog) but not the bucket name
-  const { data } = supabase.storage
-    .from('photos')
-    .getPublicUrl(storagePath);
-
-  return data?.publicUrl || null;
+  return publicPhotoUrl(storagePath);
 }
 
 export interface FeedProfile {
@@ -265,11 +258,15 @@ export interface SubmitSwipeResult {
  * Returns candidates ready for swipe feed display
  * Uses auth.uid() internally - no viewerId parameter needed
  */
-export async function getFeedBasic(limit: number = 20): Promise<FeedBasicCandidate[]> {
-  const { data, error } = await supabase.rpc('get_feed_basic', {
+export async function getFeedBasic(
+  limit: number = 20,
+  activeLane: 'pals' | 'match' = 'match'
+): Promise<FeedBasicCandidate[]> {
+  const { data, error } = await supabase.rpc('get_feed_candidates', {
     p_limit: limit,
     p_cursor_updated_at: null,
     p_cursor_user_id: null,
+    p_lane: activeLane,
   });
 
   if (error) {
@@ -314,12 +311,14 @@ export async function getFeedBasic(limit: number = 20): Promise<FeedBasicCandida
  */
 export async function getFeedQueue(
   limit: number = 10,
-  cursor: FeedCursor | null = null
+  cursor: FeedCursor | null = null,
+  activeLane: 'pals' | 'match' = 'match'
 ): Promise<{ candidateIds: string[]; nextCursor: FeedCursor | null }> {
-  const { data, error } = await supabase.rpc('get_feed_basic', {
+  const { data, error } = await supabase.rpc('get_feed_candidates', {
     p_limit: limit,
     p_cursor_updated_at: cursor?.updated_at ?? null,
     p_cursor_user_id: cursor?.user_id ?? null,
+    p_lane: activeLane,
   });
 
   if (error) {
@@ -346,6 +345,48 @@ export async function getFeedQueue(
 }
 
 /**
+ * Get feed page with full profile payloads using cursor-based pagination
+ * Returns complete profile data and next cursor for queue management
+ * Uses auth.uid() internally - no viewerId parameter needed
+ */
+export async function getFeedPage(
+  limit: number = 10,
+  cursor: FeedCursor | null = null,
+  activeLane: 'pals' | 'match' = 'match'
+): Promise<{ profiles: ProfileViewPayload[]; nextCursor: FeedCursor | null }> {
+  const { data, error } = await supabase.rpc('get_feed_page', {
+    p_limit: limit,
+    p_cursor_updated_at: cursor?.updated_at ?? null,
+    p_cursor_user_id: cursor?.user_id ?? null,
+    p_lane: activeLane,
+  });
+
+  if (error) {
+    console.error('[feedService] Failed to get feed page:', error);
+    throw new Error(`Failed to get feed page: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    return { profiles: [], nextCursor: null };
+  }
+
+  // Each row: { profile: <json>, cursor_updated_at, cursor_user_id }
+  const profiles = data
+    .map((row: any) => row.profile)
+    .filter(Boolean) as ProfileViewPayload[];
+
+  const lastRow = data[data.length - 1];
+  const nextCursor: FeedCursor | null = lastRow
+    ? {
+        updated_at: lastRow.cursor_updated_at,
+        user_id: lastRow.cursor_user_id,
+      }
+    : null;
+
+  return { profiles, nextCursor };
+}
+
+/**
  * Get full profile view for a candidate
  * Returns complete profile data including dogs, photos, prompts, and compatibility
  * Uses auth.uid() internally - no viewerId parameter needed
@@ -368,30 +409,104 @@ export async function getProfileView(candidateId: string): Promise<ProfileViewPa
 }
 
 /**
- * Submit a swipe action (reject, pass, or accept)
- * Returns result with remaining accepts count or error
+ * Record a reject action
  * Uses auth.uid() internally - no viewerId parameter needed
- * 
- * @deprecated The old signature with viewerId is deprecated. This method now only takes candidateId and action.
  */
-export async function submitSwipe(
+export async function recordReject(
   candidateId: string,
-  action: 'reject' | 'pass' | 'accept'
-): Promise<SubmitSwipeResult> {
-  const { data, error } = await supabase.rpc('submit_swipe', {
-    p_candidate_id: candidateId,
-    p_action: action,
+  activeLane: 'pals' | 'match',
+  crossLaneDays: number = 30
+): Promise<{ ok: boolean; error?: string }> {
+  const { data, error } = await supabase.rpc('record_reject', {
+    p_target_id: candidateId,
+    p_lane: activeLane,
+    p_cross_lane_days: crossLaneDays,
   });
 
   if (error) {
-    console.error('[feedService] Failed to submit swipe:', error);
-    throw new Error(`Failed to submit swipe: ${error.message}`);
+    console.error('[feedService] record_reject rpc error:', error);
+    throw new Error(error.message ?? 'Failed to record reject');
   }
 
-  return data as SubmitSwipeResult;
+  return (data as { ok: boolean; error?: string }) ?? { ok: true };
 }
 
 /**
+ * Record a skip action (pass for N days)
+ * Uses auth.uid() internally - no viewerId parameter needed
+ */
+export async function recordSkip(
+  candidateId: string,
+  activeLane: 'pals' | 'match',
+  skipDays: number = 7
+): Promise<{ ok: boolean; error?: string }> {
+  const { data, error } = await supabase.rpc('record_skip', {
+    p_target_id: candidateId,
+    p_lane: activeLane,
+    p_skip_days: skipDays,
+  });
+
+  if (error) {
+    console.error('[feedService] record_skip rpc error:', error);
+    throw new Error(error.message ?? 'Failed to record skip');
+  }
+
+  return (data as { ok: boolean; error?: string }) ?? { ok: true };
+}
+
+/**
+ * Submit a swipe action (lane-aware)
+ * Returns result with remaining accepts count or error
+ * Uses auth.uid() internally - no viewerId parameter needed
+ */
+export async function submitSwipe(
+  candidateId: string,
+  action: 'accept' | 'reject' | 'pass',
+  lane: 'pals' | 'match'
+): Promise<{ ok: boolean; error?: string; remaining_accepts?: number | null }> {
+  const { data, error } = await supabase.rpc('submit_swipe', {
+    p_candidate_id: candidateId,
+    p_action: action,
+    p_lane: lane,
+  });
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+/**
+ * Send a chat request (like + message in one atomic operation)
+ * Replaces the two-step process of submitSwipe + sendConnectionRequest
+ * This ensures quota is checked consistently in a single transaction
+ * 
+ * @param targetId - The recipient's user ID
+ * @param lane - The active lane ('pals' | 'match')
+ * @param body - The message text
+ * @param metadata - Optional metadata object (e.g., { photo_id, prompt_id })
+ */
+export async function sendChatRequest(
+  targetId: string,
+  lane: Lane,
+  body: string,
+  metadata?: Record<string, any>
+): Promise<{ ok: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number }> {
+  const { data, error } = await supabase.rpc('send_chat_request', {
+    p_target_id: targetId,
+    p_lane: lane,
+    p_body: body,
+    p_metadata: metadata ?? {},
+  });
+
+  if (error) {
+    console.error('[feedService] Failed to send chat request:', error);
+    throw new Error(`Failed to send chat request: ${error.message}`);
+  }
+
+  return data as { ok: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number };
+}
+
+/**
+ * @deprecated Use sendChatRequest instead for likes with messages.
  * Send a connection request with optional compliment message
  * Uses auth.uid() internally - no viewerId parameter needed
  * 
@@ -443,46 +558,163 @@ export async function sendConnectionRequest(
   return data as { ok: boolean; error?: string };
 }
 
+export type Lane = 'pals' | 'match';
+
+export type UndoResult = {
+  undone_target_id: string;
+  action: 'reject' | 'skip';
+  lane: Lane;
+  undone_at: string;
+};
+
 /**
- * Undo the last reject swipe (delete the most recent reject swipe)
+ * Undo the last dislike (reject or skip) for the given lane
  * Uses RPC function with SECURITY DEFINER to bypass RLS
- * Returns the candidate_id that was undone so UI can re-insert the card
+ * Returns the full undo result with target ID, action, lane, and timestamp
+ * 
+ * @param activeLane - The lane to undo the last dislike from ('pals' | 'match')
  */
-export async function undoSwipe(): Promise<string | null> {
-  const { data, error } = await supabase.rpc('undo_last_reject');
+export async function undoLastDislike(activeLane: Lane): Promise<UndoResult> {
+  const { data, error } = await supabase.rpc('undo_last_dislike', { p_lane: activeLane });
 
+  console.log('[feedService] undo_last_dislike data:', data);
   if (error) {
-    console.error('[feedService] Failed to undo swipe:', error);
-    throw new Error(`Failed to undo swipe: ${error.message}`);
+    console.error('[feedService] undo_last_dislike rpc error:', error);
+    throw new Error(error.message ?? 'undo_failed');
   }
 
-  if (!data?.ok) {
-    const errorMsg = data?.error ?? 'undo_failed';
-    console.error('[feedService] Undo failed:', errorMsg);
-    throw new Error(`Failed to undo swipe: ${errorMsg}`);
+  // Supabase returns json as an object. Validate it.
+  const result = data as UndoResult | null;
+  if (!result?.undone_target_id) {
+    console.error('[feedService] undo_last_dislike malformed response:', data);
+    throw new Error('undo_failed');
   }
 
-  return data.candidate_id || null;
+  // Important: RETURN here. Do not fall through to a generic throw.
+  return result;
 }
 
 /**
- * Undo the last pass swipe (delete the most recent pass swipe)
- * Uses RPC function with SECURITY DEFINER to bypass RLS
- * Returns the candidate_id that was undone so UI can re-insert the card
+ * Undo the last dislike and refresh the feed
+ * If refresh fails, the undo still succeeds (doesn't throw)
+ * 
+ * @param activeLane - The lane to undo the last dislike from
+ * @param refreshFeed - Callback function to refresh the feed
  */
-export async function undoPassSwipe(): Promise<string | null> {
-  const { data, error } = await supabase.rpc('undo_last_pass');
+export async function undoLastDislikeAndRefresh(
+  activeLane: Lane,
+  refreshFeed: () => Promise<void>
+): Promise<UndoResult> {
+  const undo = await undoLastDislike(activeLane);
+
+  try {
+    await refreshFeed();
+  } catch (e) {
+    console.warn('[feedService] undo succeeded but refresh failed:', e);
+    // Do NOT throw undo_failed here.
+  }
+
+  return undo;
+}
+
+/**
+ * Reset dislikes for selected lanes
+ * Uses auth.uid() internally - no viewerId parameter needed
+ */
+export async function resetDislikes(lanes: Array<'pals' | 'match'>) {
+  const { data, error } = await supabase.rpc('reset_dislikes', {
+    p_lanes: lanes,
+  });
 
   if (error) {
-    console.error('[feedService] Failed to undo pass swipe:', error);
-    throw new Error(`Failed to undo pass swipe: ${error.message}`);
+    console.error('[feedService] reset_dislikes failed:', error);
+    throw new Error(error.message);
   }
 
   if (!data?.ok) {
-    const errorMsg = data?.error ?? 'undo_failed';
-    console.error('[feedService] Undo pass failed:', errorMsg);
-    throw new Error(`Failed to undo pass swipe: ${errorMsg}`);
+    throw new Error(data?.error ?? 'reset_failed');
   }
 
-  return data.candidate_id ?? null;
+  return data as { ok: true; updated_count: number; cleanup_deleted: number; lanes: string[] };
+}
+
+/**
+ * Mark lanes as needing refresh after reset
+ * The feed screen will check this flag and clear state for these lanes
+ */
+export async function markLanesForRefresh(lanes: Array<'pals' | 'match'>): Promise<void> {
+  const LANES_TO_REFRESH_KEY = 'lanes_to_refresh_v1';
+  
+  try {
+    await storage.set(LANES_TO_REFRESH_KEY, JSON.stringify(lanes));
+    console.log(`[feedService] Marked lanes for refresh: ${lanes.join(', ')}`);
+  } catch (error) {
+    console.error('[feedService] Failed to mark lanes for refresh:', error);
+  }
+}
+
+/**
+ * Get and clear lanes that need refresh
+ * Returns the lanes that were marked, or null if none
+ */
+export async function getLanesNeedingRefresh(): Promise<Array<'pals' | 'match'> | null> {
+  const LANES_TO_REFRESH_KEY = 'lanes_to_refresh_v1';
+  
+  try {
+    const stored = await storage.getString(LANES_TO_REFRESH_KEY);
+    if (!stored) return null;
+    
+    const lanes = JSON.parse(stored) as Array<'pals' | 'match'>;
+    
+    // Clear the flag immediately
+    await storage.delete(LANES_TO_REFRESH_KEY);
+    
+    return lanes;
+  } catch (error) {
+    console.error('[feedService] Failed to get lanes needing refresh:', error);
+    return null;
+  }
+}
+
+/**
+ * Clear pending dislike events from local outbox for specified lanes
+ * This should be called BEFORE resetting dislikes to prevent re-applying suppressions
+ */
+export async function clearDislikeOutbox(lanes: Array<'pals' | 'match'>): Promise<void> {
+  const DISLIKE_OUTBOX_KEY = 'dislike_outbox_v1';
+  
+  try {
+    const stored = await storage.getString(DISLIKE_OUTBOX_KEY);
+    if (!stored) {
+      console.log('[feedService] No dislike outbox to clear');
+      return;
+    }
+
+    const outbox = JSON.parse(stored) as Array<{
+      eventId: string;
+      targetId: string;
+      lane: 'pals' | 'match';
+      action: 'reject' | 'skip';
+      createdAtMs: number;
+      commitAfterMs: number;
+      crossLaneDays?: number;
+      skipDays?: number;
+      snapshot: ProfileViewPayload;
+      retryCount?: number;
+      lastRetryMs?: number;
+    }>;
+
+    // Filter out events for the specified lanes
+    const filteredOutbox = outbox.filter(event => !lanes.includes(event.lane));
+
+    // Save filtered outbox back to storage
+    await storage.set(DISLIKE_OUTBOX_KEY, JSON.stringify(filteredOutbox));
+
+    console.log(
+      `[feedService] Cleared ${outbox.length - filteredOutbox.length} dislike events for lanes: ${lanes.join(', ')}`
+    );
+  } catch (error) {
+    console.error('[feedService] Failed to clear dislike outbox:', error);
+    // Don't throw - this is a cleanup operation, proceed with reset even if it fails
+  }
 }

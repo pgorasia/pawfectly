@@ -8,6 +8,32 @@ import { saveDogPromptAnswers, getAllDogPromptAnswers } from '../prompts/dogProm
 
 export type OnboardingStep = 'pack' | 'human' | 'photos' | 'preferences' | 'done';
 
+/**
+ * Convert date from display format (mm/dd/yyyy) to database format (YYYY-MM-DD)
+ */
+function convertDisplayToDbDate(displayDate: string): string | null {
+  if (!displayDate) return null;
+  
+  const parts = displayDate.split('/');
+  if (parts.length !== 3) return null;
+  
+  const [month, day, year] = parts;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
+/**
+ * Convert date from database format (YYYY-MM-DD) to display format (mm/dd/yyyy)
+ */
+function convertDbToDisplayDate(dbDate: string): string {
+  if (!dbDate) return '';
+  
+  const parts = dbDate.split('-');
+  if (parts.length !== 3) return '';
+  
+  const [year, month, day] = parts;
+  return `${month}/${day}/${year}`;
+}
+
 export interface OnboardingStatus {
   user_id: string;
   last_step: OnboardingStep;
@@ -110,7 +136,7 @@ export async function updateProfileData(
     const profileData: any = {
       user_id: userId,
       display_name: human.name || null,
-      dob: human.dateOfBirth || null,
+      dob: convertDisplayToDbDate(human.dateOfBirth || ''),
       gender: human.gender || null,
       city: location?.city || null,
       latitude: location?.latitude || null,
@@ -341,7 +367,7 @@ export async function saveHumanData(
     const profileData: any = {
       user_id: userId,
       display_name: human.name || null,
-      dob: human.dateOfBirth || null,
+      dob: convertDisplayToDbDate(human.dateOfBirth || ''),
       gender: human.gender || null,
       city: location?.city || null,
       latitude: location?.latitude || null,
@@ -382,7 +408,7 @@ export async function savePackData(
     const profileData: any = {
       user_id: userId,
       display_name: human.name || null,
-      dob: human.dateOfBirth || null,
+      dob: convertDisplayToDbDate(human.dateOfBirth || ''),
       gender: human.gender || null,
       city: location?.city || null,
       latitude: location?.latitude || null,
@@ -489,18 +515,25 @@ export async function updatePreferencesData(
       prefsData.match_distance_miles = matchPrefs.distance || null;
     }
 
+    console.log('[OnboardingService] 📤 Upserting to database:', {
+      pals_enabled: prefsData.pals_enabled,
+      match_enabled: prefsData.match_enabled,
+    });
+
     const { error } = await supabase
       .from('preferences')
       .upsert(prefsData, { onConflict: 'user_id' });
 
     if (error) {
-      console.error('[OnboardingService] Failed to update preferences:', error);
+      console.error('[OnboardingService] ❌ Database error:', error);
       throw new Error(`Failed to update preferences: ${error.message}`);
     }
 
+    console.log('[OnboardingService] ✅ Database updated successfully');
+
     // Do NOT update onboarding state - this is just a preferences update
   } catch (error) {
-    console.error('[OnboardingService] Error updating preferences data:', error);
+    console.error('[OnboardingService] ❌ Error updating preferences:', error);
     throw error;
   }
 }
@@ -694,7 +727,7 @@ export async function loadDogsWithPrompts(userId: string): Promise<DogProfile[]>
 export function dbProfileToHumanProfile(dbProfile: any): HumanProfile {
   return {
     name: dbProfile.display_name || '',
-    dateOfBirth: dbProfile.dob || '',
+    dateOfBirth: convertDbToDisplayDate(dbProfile.dob || ''),
     gender: dbProfile.gender || null,
   };
 }
