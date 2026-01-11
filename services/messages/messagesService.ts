@@ -220,16 +220,38 @@ export async function acceptRequest(conversationId: string): Promise<{
   error: Error | null;
 }> {
   try {
+    console.log('[messagesService] acceptRequest calling RPC:', { conversationId });
+
     const { data, error } = await supabase.rpc('accept_request', {
       p_conversation_id: conversationId,
     });
 
     if (error) {
-      console.error('[messagesService] acceptRequest error:', error);
-      return { data: null, error: new Error(error.message) };
+      console.error('[messagesService] acceptRequest RPC error:', {
+        error,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+      return { data: null, error: new Error(error.message || 'Failed to accept request') };
     }
 
-    return { data: data as { success: boolean }, error: null };
+    // Log the response for debugging
+    console.log('[messagesService] acceptRequest response:', data);
+
+    // Check if response indicates success (could be { ok: true } or { success: true })
+    const result = data as { ok?: boolean; success?: boolean } | null;
+    const isSuccess = result?.ok === true || result?.success === true;
+
+    if (!isSuccess) {
+      const errorMsg = `accept_request returned unsuccessful result: ${JSON.stringify(result)}`;
+      console.error('[messagesService]', errorMsg);
+      return { data: null, error: new Error(errorMsg) };
+    }
+
+    console.log('[messagesService] acceptRequest completed successfully');
+    return { data: { success: true }, error: null };
   } catch (err) {
     console.error('[messagesService] acceptRequest exception:', err);
     return { data: null, error: err as Error };
@@ -244,16 +266,38 @@ export async function rejectRequest(conversationId: string): Promise<{
   error: Error | null;
 }> {
   try {
+    console.log('[messagesService] rejectRequest calling RPC:', { conversationId });
+
     const { data, error } = await supabase.rpc('reject_request', {
       p_conversation_id: conversationId,
     });
 
     if (error) {
-      console.error('[messagesService] rejectRequest error:', error);
-      return { data: null, error: new Error(error.message) };
+      console.error('[messagesService] rejectRequest RPC error:', {
+        error,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+      return { data: null, error: new Error(error.message || 'Failed to reject request') };
     }
 
-    return { data: data as { success: boolean }, error: null };
+    // Log the response for debugging
+    console.log('[messagesService] rejectRequest response:', data);
+
+    // Check if response indicates success (could be { ok: true } or { success: true })
+    const result = data as { ok?: boolean; success?: boolean } | null;
+    const isSuccess = result?.ok === true || result?.success === true;
+
+    if (!isSuccess) {
+      const errorMsg = `reject_request returned unsuccessful result: ${JSON.stringify(result)}`;
+      console.error('[messagesService]', errorMsg);
+      return { data: null, error: new Error(errorMsg) };
+    }
+
+    console.log('[messagesService] rejectRequest completed successfully');
+    return { data: { success: true }, error: null };
   } catch (err) {
     console.error('[messagesService] rejectRequest exception:', err);
     return { data: null, error: err as Error };
@@ -389,6 +433,147 @@ export async function markConversationRead(conversationId: string): Promise<{
     return { data: data as { success: boolean }, error: null };
   } catch (err) {
     console.error('[messagesService] markConversationRead exception:', err);
+    return { data: null, error: err as Error };
+  }
+}
+
+/**
+ * Close a conversation (soft delete/hide)
+ */
+export async function closeConversation(
+  conversationId: string,
+  forBoth: boolean,
+  reason: 'block' | 'unmatch' | 'report'
+): Promise<{
+  data: { success: boolean } | null;
+  error: Error | null;
+}> {
+  try {
+    const { data, error } = await supabase.rpc('close_conversation', {
+      p_conversation_id: conversationId,
+      p_for_both: forBoth,
+      p_reason: reason,
+    });
+
+    if (error) {
+      console.error('[messagesService] closeConversation error:', error);
+      return { data: null, error: new Error(error.message) };
+    }
+
+    // The RPC returns { ok: true, ... }, check for ok field
+    const result = data as { ok: boolean } | null;
+    return { data: result?.ok ? { success: true } : null, error: null };
+  } catch (err) {
+    console.error('[messagesService] closeConversation exception:', err);
+    return { data: null, error: err as Error };
+  }
+}
+
+/**
+ * Unmatch with a user
+ * - Deletes conversation and all messages for both users
+ * - Registers "pass" for the candidate in all active lanes
+ * - No notifications to candidate
+ */
+export async function unmatchUser(
+  targetId: string,
+  conversationId: string
+): Promise<{
+  data: { success: boolean } | null;
+  error: Error | null;
+}> {
+  try {
+    console.log('[messagesService] Unmatching user:', { targetId, conversationId });
+
+    const { data, error } = await supabase.rpc('unmatch_user', {
+      p_target_id: targetId,
+      p_conversation_id: conversationId,
+    });
+
+    if (error) {
+      console.error('[messagesService] unmatch_user RPC error:', {
+        error,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+      return { data: null, error: new Error(error.message || 'Failed to unmatch user') };
+    }
+
+    // Log the response for debugging
+    console.log('[messagesService] unmatch_user response:', data);
+
+    // Check if response indicates success (could be { ok: true } or { success: true })
+    const result = data as { ok?: boolean; success?: boolean } | null;
+    const isSuccess = result?.ok === true || result?.success === true;
+
+    if (!isSuccess) {
+      const errorMsg = `unmatch_user returned unsuccessful result: ${JSON.stringify(result)}`;
+      console.error('[messagesService]', errorMsg);
+      return { data: null, error: new Error(errorMsg) };
+    }
+
+    console.log('[messagesService] Unmatch completed successfully');
+    return { data: { success: true }, error: null };
+  } catch (err) {
+    console.error('[messagesService] unmatchUser exception:', err);
+    return { data: null, error: err as Error };
+  }
+}
+
+/**
+ * Report a user
+ * - Deletes conversation and all messages for both users
+ * - Tracks report for flagging if reported by multiple users
+ */
+export async function reportUser(
+  targetId: string,
+  reason: string,
+  details: string | null,
+  conversationId: string
+): Promise<{
+  data: { success: boolean } | null;
+  error: Error | null;
+}> {
+  try {
+    console.log('[messagesService] Reporting user:', { targetId, reason, details, conversationId });
+
+    const { data, error } = await supabase.rpc('report_user', {
+      p_target_id: targetId,
+      p_reason: reason,
+      p_details: details,
+      p_conversation_id: conversationId,
+    });
+
+    if (error) {
+      console.error('[messagesService] report_user RPC error:', {
+        error,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      });
+      return { data: null, error: new Error(error.message || 'Failed to report user') };
+    }
+
+    // Log the response for debugging
+    console.log('[messagesService] report_user response:', data);
+
+    // Check if response indicates success (could be { ok: true } or { success: true })
+    const result = data as { ok?: boolean; success?: boolean } | null;
+    const isSuccess = result?.ok === true || result?.success === true;
+
+    if (!isSuccess) {
+      const errorMsg = `report_user returned unsuccessful result: ${JSON.stringify(result)}`;
+      console.error('[messagesService]', errorMsg);
+      return { data: null, error: new Error(errorMsg) };
+    }
+
+    console.log('[messagesService] Report completed successfully');
+    return { data: { success: true }, error: null };
+  } catch (err) {
+    console.error('[messagesService] reportUser exception:', err);
     return { data: null, error: err as Error };
   }
 }

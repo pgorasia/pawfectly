@@ -62,7 +62,7 @@ export function RequestRow({ request, onPress }: RequestRowProps) {
         </View>
         
         <AppText variant="caption" style={styles.preview} numberOfLines={2}>
-          {request.preview || 'Wants to connect'}
+          {request.preview || 'Wants to send you a message'}
         </AppText>
       </View>
     </TouchableOpacity>

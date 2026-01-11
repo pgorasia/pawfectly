@@ -37,12 +37,19 @@ import {
   getConversationMessages,
   sendMessage,
   markConversationRead,
+  closeConversation,
+  unmatchUser,
+  reportUser,
+  acceptRequest,
+  rejectRequest,
   type ConversationMessageDTO,
   type ConversationMessagesCursor,
 } from '@/services/messages/messagesService';
+import { submitSwipe } from '@/services/feed/feedService';
 import { getProfileView } from '@/services/feed/feedService';
 import type { ProfileViewPayload } from '@/types/feed';
-import { chatEvents, CHAT_EVENTS } from '@/utils/chatEvents';
+import { blockUser } from '@/services/block/blockService';
+import { chatEvents, CHAT_EVENTS, type ConversationClosedData } from '@/utils/chatEvents';
 
 type TabType = 'chat' | 'profile';
 
@@ -155,12 +162,27 @@ export default function ChatThreadScreen() {
     peerUserId,
     peerName,
     peerPhotoPath,
+    isRequest,
+    requestLane,
+    isSentRequest,
   } = useLocalSearchParams<{
     conversationId: string;
     peerUserId?: string;
     peerName?: string;
     peerPhotoPath?: string;
+    isRequest?: string; // 'true' if this is an incoming request (user needs to Accept/Reject)
+    requestLane?: string; // 'pals' | 'match' - lane to register like for
+    isSentRequest?: string; // 'true' if this is a sent request (pending acceptance from other user)
   }>();
+
+  // Request state
+  const isIncomingRequest = isRequest === 'true'; // Incoming request - show Accept/Reject buttons
+  const isPendingSentRequest = isSentRequest === 'true'; // Sent request - disable input until accepted
+  const [requestAccepted, setRequestAccepted] = useState(false);
+  const [processingRequest, setProcessingRequest] = useState(false);
+  
+  // Input should be disabled if it's an incoming request (not accepted) OR a sent request (pending)
+  const isInputDisabled = (isIncomingRequest && !requestAccepted) || isPendingSentRequest;
 
   // Tab state
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -452,8 +474,117 @@ export default function ChatThreadScreen() {
     setActiveTab('profile');
   };
 
+  // Accept incoming request
+  const handleAcceptRequest = async () => {
+    if (!conversationId || !peerUserId || !requestLane) {
+      Alert.alert('Error', 'Missing information to accept request');
+      return;
+    }
+
+    setProcessingRequest(true);
+    try {
+      console.log('[ChatThread] Accepting request:', {
+        conversationId,
+        peerUserId,
+        lane: requestLane,
+      });
+
+      // 1. Accept the request (moves conversation from request to active)
+      const acceptResult = await acceptRequest(conversationId);
+      if (acceptResult.error || !acceptResult.data?.success) {
+        console.error('[ChatThread] Failed to accept request:', acceptResult.error);
+        Alert.alert('Error', acceptResult.error?.message || 'Failed to accept request. Please try again.');
+        setProcessingRequest(false);
+        return;
+      }
+
+      // 2. Register a like from user for that candidate for the lane candidate sent request for
+      try {
+        await submitSwipe(peerUserId, 'accept', requestLane as 'pals' | 'match');
+        console.log('[ChatThread] Like registered successfully');
+      } catch (swipeError) {
+        console.error('[ChatThread] Failed to register like:', swipeError);
+        // Continue anyway - request is already accepted
+      }
+
+      // 3. Enable input and mark request as accepted
+      setRequestAccepted(true);
+      console.log('[ChatThread] Request accepted successfully');
+      
+      // 4. Focus the input and open keyboard after a short delay
+      setTimeout(() => {
+        inputRef.current?.focus();
+        // On Android, sometimes need to explicitly show keyboard
+        if (Platform.OS === 'android') {
+          setTimeout(() => {
+            inputRef.current?.focus();
+          }, 100);
+        }
+      }, 200);
+    } catch (error) {
+      console.error('[ChatThread] Error accepting request:', error);
+      Alert.alert('Error', 'Failed to accept request. Please try again.');
+    } finally {
+      setProcessingRequest(false);
+    }
+  };
+
+  // Reject incoming request
+  const handleRejectRequest = async () => {
+    if (!conversationId) {
+      Alert.alert('Error', 'Missing conversation information');
+      return;
+    }
+
+    Alert.alert(
+      'Reject Request',
+      `Are you sure you want to reject ${displayName}'s request?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reject',
+          style: 'destructive',
+          onPress: async () => {
+            setProcessingRequest(true);
+            try {
+              console.log('[ChatThread] Rejecting request:', { conversationId });
+
+              const rejectResult = await rejectRequest(conversationId);
+              if (rejectResult.error || !rejectResult.data?.success) {
+                console.error('[ChatThread] Failed to reject request:', rejectResult.error);
+                Alert.alert('Error', rejectResult.error?.message || 'Failed to reject request. Please try again.');
+                setProcessingRequest(false);
+                return;
+              }
+
+              // Emit event to notify messages screen to remove request from UI
+              chatEvents.emit(CHAT_EVENTS.CONVERSATION_CLOSED, {
+                conversationId,
+                reason: 'unmatch', // Use unmatch reason for UI removal
+              } as ConversationClosedData);
+
+              console.log('[ChatThread] Request rejected successfully');
+              
+              // Navigate back after rejecting
+              router.back();
+            } catch (error) {
+              console.error('[ChatThread] Error rejecting request:', error);
+              Alert.alert('Error', 'Failed to reject request. Please try again.');
+              setProcessingRequest(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   // Header actions
-  const handleUnmatch = () => {
+  const handleUnmatch = async () => {
+    if (!conversationId || !peerUserId) {
+      Alert.alert('Error', 'Unable to unmatch: missing conversation or user information');
+      return;
+    }
+
     Alert.alert(
       'Unmatch',
       `Are you sure you want to unmatch with ${displayName}? This cannot be undone.`,
@@ -462,50 +593,159 @@ export default function ChatThreadScreen() {
         {
           text: 'Unmatch',
           style: 'destructive',
-          onPress: () => {
-            // TODO: Implement unmatch RPC
-            console.log('[ChatThread] Unmatch pressed');
-            setShowMenu(false);
-            router.back();
+          onPress: async () => {
+            try {
+              setShowMenu(false);
+              console.log('[ChatThread] Unmatching user:', {
+                conversationId,
+                peerUserId,
+                displayName,
+              });
+
+              // Unmatch: Delete conversation + pass for all active lanes
+              const result = await unmatchUser(peerUserId, conversationId);
+
+              if (result.error || !result.data?.success) {
+                console.error('[ChatThread] Failed to unmatch:', result.error);
+                Alert.alert('Error', result.error?.message || 'Failed to unmatch. Please try again.');
+                return;
+              }
+
+              // Emit event to notify messages screen to remove conversation from UI
+              chatEvents.emit(CHAT_EVENTS.CONVERSATION_CLOSED, {
+                conversationId,
+                reason: 'unmatch',
+              } as ConversationClosedData);
+
+              console.log('[ChatThread] Successfully unmatched');
+              // Navigate back after successful unmatch
+              router.back();
+            } catch (error) {
+              console.error('[ChatThread] Unmatch exception:', error);
+              Alert.alert('Error', 'Failed to unmatch. Please try again.');
+            }
           },
         },
       ]
     );
   };
 
-  const handleBlock = () => {
+  const handleBlock = async () => {
+    if (!user?.id || !peerUserId || !conversationId) {
+      Alert.alert('Error', 'Unable to block user: missing user information');
+      return;
+    }
+
     Alert.alert(
-      'Block',
-      `Block ${displayName}? They won't be able to message you.`,
+      'Block User',
+      `Are you sure you want to block ${displayName}? They won't appear in your feed anymore.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Block',
           style: 'destructive',
-          onPress: () => {
-            // TODO: Implement block RPC
-            console.log('[ChatThread] Block pressed');
-            setShowMenu(false);
-            router.back();
+          onPress: async () => {
+            try {
+              setShowMenu(false);
+              console.log('[ChatThread] Blocking user:', {
+                conversationId,
+                peerUserId,
+                displayName,
+              });
+
+              // Block the user (existing block functionality)
+              await blockUser(user.id, peerUserId, 'block');
+
+              // Close conversation (deletes for both users, notifies peer)
+              const closeResult = await closeConversation(conversationId, true, 'block');
+              if (closeResult.error || !closeResult.data?.success) {
+                console.error('[ChatThread] Failed to close conversation:', closeResult.error || 'Unknown error');
+                // Continue anyway - block already succeeded, but conversation might still be visible
+                Alert.alert('Warning', 'User blocked, but conversation could not be closed. Please refresh.');
+              } else {
+                console.log('[ChatThread] Conversation closed successfully');
+              }
+              
+              // Emit event to notify messages screen to remove conversation from UI (always emit, even if closeConversation had issues)
+              console.log('[ChatThread] Emitting CONVERSATION_CLOSED event:', { conversationId, reason: 'block' });
+              chatEvents.emit(CHAT_EVENTS.CONVERSATION_CLOSED, {
+                conversationId,
+                reason: 'block',
+              } as ConversationClosedData);
+
+              console.log('[ChatThread] User blocked successfully');
+              
+              // Small delay to ensure event is processed before navigation
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
+              // Navigate back after blocking
+              router.back();
+            } catch (error) {
+              console.error('[ChatThread] Failed to block user:', error);
+              Alert.alert('Error', 'Failed to block user. Please try again.');
+            }
           },
         },
       ]
     );
   };
 
-  const handleReport = () => {
+  const handleReport = async () => {
+    if (!user?.id || !peerUserId || !conversationId) {
+      Alert.alert('Error', 'Unable to report user: missing user information');
+      return;
+    }
+
     Alert.alert(
-      'Report',
-      `Report ${displayName} for inappropriate behavior?`,
+      'Report User',
+      `Are you sure you want to report ${displayName}? This action cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Report',
           style: 'destructive',
-          onPress: () => {
-            // TODO: Implement report RPC
-            console.log('[ChatThread] Report pressed');
-            setShowMenu(false);
+          onPress: async () => {
+            try {
+              setShowMenu(false);
+              console.log('[ChatThread] Reporting user:', {
+                conversationId,
+                peerUserId,
+                displayName,
+              });
+
+              // Report the user (deletes conversation, tracks for flagging if reported by multiple users)
+              const result = await reportUser(
+                peerUserId,
+                'inappropriate_behavior', // Reason for the report
+                null, // No additional details for now
+                conversationId
+              );
+
+              if (result.error || !result.data?.success) {
+                console.error('[ChatThread] Failed to report user:', result.error);
+                Alert.alert('Error', result.error?.message || 'Failed to report user. Please try again.');
+                return;
+              }
+
+              // Emit event to notify messages screen to remove conversation from UI
+              chatEvents.emit(CHAT_EVENTS.CONVERSATION_CLOSED, {
+                conversationId,
+                reason: 'report',
+              } as ConversationClosedData);
+
+              console.log('[ChatThread] User reported successfully');
+              
+              // Show confirmation and navigate back
+              Alert.alert('Reported', 'Thank you for your report. We will review it.', [
+                {
+                  text: 'OK',
+                  onPress: () => router.back(),
+                },
+              ]);
+            } catch (error) {
+              console.error('[ChatThread] Failed to report user:', error);
+              Alert.alert('Error', 'Failed to report user. Please try again.');
+            }
           },
         },
       ]
@@ -555,24 +795,45 @@ export default function ChatThreadScreen() {
             activeOpacity={1}
           />
           <View style={styles.menuContainer}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleUnmatch}>
-              <MaterialIcons name="person-remove" size={20} color={Colors.text} />
-              <AppText variant="body" style={styles.menuItemText}>
-                Unmatch
-              </AppText>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={handleBlock}>
-              <MaterialIcons name="block" size={20} color={Colors.text} />
-              <AppText variant="body" style={styles.menuItemText}>
-                Block
-              </AppText>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.menuItem} onPress={handleReport}>
-              <MaterialIcons name="flag" size={20} color="#ef4444" />
-              <AppText variant="body" style={[styles.menuItemText, { color: '#ef4444' }]}>
-                Report
-              </AppText>
-            </TouchableOpacity>
+            {/* For incoming requests, only show Block and Report */}
+            {isIncomingRequest ? (
+              <>
+                <TouchableOpacity style={styles.menuItem} onPress={handleBlock}>
+                  <MaterialIcons name="block" size={20} color={Colors.text} />
+                  <AppText variant="body" style={styles.menuItemText}>
+                    Block
+                  </AppText>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.menuItem} onPress={handleReport}>
+                  <MaterialIcons name="flag" size={20} color="#ef4444" />
+                  <AppText variant="body" style={[styles.menuItemText, { color: '#ef4444' }]}>
+                    Report
+                  </AppText>
+                </TouchableOpacity>
+              </>
+            ) : (
+              /* For active conversations, show all options */
+              <>
+                <TouchableOpacity style={styles.menuItem} onPress={handleUnmatch}>
+                  <MaterialIcons name="person-remove" size={20} color={Colors.text} />
+                  <AppText variant="body" style={styles.menuItemText}>
+                    Unmatch
+                  </AppText>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.menuItem} onPress={handleBlock}>
+                  <MaterialIcons name="block" size={20} color={Colors.text} />
+                  <AppText variant="body" style={styles.menuItemText}>
+                    Block
+                  </AppText>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.menuItem} onPress={handleReport}>
+                  <MaterialIcons name="flag" size={20} color="#ef4444" />
+                  <AppText variant="body" style={[styles.menuItemText, { color: '#ef4444' }]}>
+                    Report
+                  </AppText>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       )}
@@ -607,6 +868,16 @@ export default function ChatThreadScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 100}
         >
           <View style={styles.contentContainer}>
+            {/* Pending Request Banner */}
+            {isPendingSentRequest && (
+              <View style={styles.pendingBanner}>
+                <MaterialIcons name="schedule" size={16} color={Colors.text} style={styles.pendingBannerIcon} />
+                <AppText variant="caption" style={styles.pendingBannerText}>
+                  Your request is pending. You'll be able to send messages once {displayName} accepts.
+                </AppText>
+              </View>
+            )}
+            
             {loading ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color={Colors.primary} />
@@ -627,21 +898,23 @@ export default function ChatThreadScreen() {
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="interactive"
                 ListHeaderComponent={
-                  nextCursor && !loadingOlder ? (
-                    <TouchableOpacity 
-                      style={styles.loadOlderButton} 
-                      onPress={loadOlderMessages}
-                      activeOpacity={0.7}
-                    >
-                      <AppText variant="caption" style={styles.loadOlderText}>
-                        Load older messages
-                      </AppText>
-                    </TouchableOpacity>
-                  ) : loadingOlder ? (
-                    <View style={styles.loadOlderButton}>
-                      <ActivityIndicator size="small" color={Colors.primary} />
-                    </View>
-                  ) : null
+                  <>
+                    {nextCursor && !loadingOlder ? (
+                      <TouchableOpacity 
+                        style={styles.loadOlderButton} 
+                        onPress={loadOlderMessages}
+                        activeOpacity={0.7}
+                      >
+                        <AppText variant="caption" style={styles.loadOlderText}>
+                          Load older messages
+                        </AppText>
+                      </TouchableOpacity>
+                    ) : loadingOlder ? (
+                      <View style={styles.loadOlderButton}>
+                        <ActivityIndicator size="small" color={Colors.primary} />
+                      </View>
+                    ) : null}
+                  </>
                 }
               />
             ) : (
@@ -655,37 +928,67 @@ export default function ChatThreadScreen() {
               </View>
             )}
 
-            {/* Input Bar */}
-            <View style={styles.inputContainer}>
-              <TextInput
-                ref={inputRef}
-                style={styles.input}
-                placeholder="Type a message..."
-                placeholderTextColor="rgba(31, 41, 55, 0.4)"
-                value={inputText}
-                onChangeText={setInputText}
-                multiline
-                maxLength={1000}
-                returnKeyType="default"
-                blurOnSubmit={false}
-                onFocus={() => {
-                  // Scroll to bottom when input is focused
-                  setTimeout(() => {
-                    flatListRef.current?.scrollToEnd({ animated: true });
-                  }, 100);
-                }}
-              />
-              <TouchableOpacity
-                style={[styles.sendButton, inputText.trim().length === 0 && styles.sendButtonDisabled]}
-                onPress={handleSend}
-                disabled={inputText.trim().length === 0}
-                activeOpacity={0.7}
-              >
-                <AppText variant="body" style={styles.sendButtonText}>
-                  Send
-                </AppText>
-              </TouchableOpacity>
-            </View>
+            {/* Input Bar or Request Actions */}
+            {isIncomingRequest && !requestAccepted ? (
+              <View style={styles.requestActionsContainer}>
+                <TouchableOpacity
+                  style={[styles.requestButton, styles.rejectButton, processingRequest && styles.buttonDisabled]}
+                  onPress={handleRejectRequest}
+                  disabled={processingRequest}
+                  activeOpacity={0.7}
+                >
+                  <AppText variant="body" style={styles.rejectButtonText}>
+                    Reject
+                  </AppText>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.requestButton, styles.acceptButton, processingRequest && styles.buttonDisabled]}
+                  onPress={handleAcceptRequest}
+                  disabled={processingRequest}
+                  activeOpacity={0.7}
+                >
+                  {processingRequest ? (
+                    <ActivityIndicator size="small" color={Colors.background} />
+                  ) : (
+                    <AppText variant="body" style={styles.acceptButtonText}>
+                      Accept
+                    </AppText>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.inputContainer}>
+                <TextInput
+                  ref={inputRef}
+                  style={styles.input}
+                  placeholder="Type a message..."
+                  placeholderTextColor="rgba(31, 41, 55, 0.4)"
+                  value={inputText}
+                  onChangeText={setInputText}
+                  multiline
+                  maxLength={1000}
+                  returnKeyType="default"
+                  blurOnSubmit={false}
+                  editable={!isInputDisabled}
+                  onFocus={() => {
+                    // Scroll to bottom when input is focused
+                    setTimeout(() => {
+                      flatListRef.current?.scrollToEnd({ animated: true });
+                    }, 100);
+                  }}
+                />
+                <TouchableOpacity
+                  style={[styles.sendButton, (inputText.trim().length === 0 || isInputDisabled) && styles.sendButtonDisabled]}
+                  onPress={handleSend}
+                  disabled={inputText.trim().length === 0 || isInputDisabled}
+                  activeOpacity={0.7}
+                >
+                  <AppText variant="body" style={styles.sendButtonText}>
+                    Send
+                  </AppText>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         </KeyboardAvoidingView>
       ) : (
@@ -942,6 +1245,67 @@ const styles = StyleSheet.create({
     color: Colors.background,
     fontWeight: '600',
     fontSize: 15,
+  },
+  // Request actions
+  requestActionsContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingBottom: Spacing.lg,
+    gap: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(31, 41, 55, 0.1)',
+    backgroundColor: Colors.background,
+  },
+  requestButton: {
+    flex: 1,
+    paddingVertical: Spacing.md,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  acceptButton: {
+    backgroundColor: Colors.primary,
+  },
+  acceptButtonText: {
+    color: Colors.background,
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  rejectButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  rejectButtonText: {
+    color: '#ef4444',
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  // Pending request banner
+  pendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(249, 115, 22, 0.1)', // Orange tint
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(249, 115, 22, 0.2)',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
+  },
+  pendingBannerIcon: {
+    opacity: 0.8,
+  },
+  pendingBannerText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    color: Colors.text,
+    opacity: 0.9,
   },
   emptyState: {
     flex: 1,

@@ -488,21 +488,88 @@ export async function sendChatRequest(
   targetId: string,
   lane: Lane,
   body: string,
-  metadata?: Record<string, any>
+  metadata?: Record<string, any>,
+  clientMessageId?: string
 ): Promise<{ ok: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number }> {
+  // Generate client message ID if not provided
+  const finalClientMessageId = clientMessageId || generateClientMessageId();
+
+  // Validate clientMessageId is a valid UUID
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(finalClientMessageId)) {
+    const errorMsg = `Invalid clientMessageId: "${finalClientMessageId}". Expected UUID format.`;
+    console.error('[feedService] sendChatRequest:', errorMsg);
+    throw new Error(errorMsg);
+  }
+
+  console.log('[feedService] sendChatRequest calling RPC:', {
+    targetId,
+    lane,
+    bodyLength: body.length,
+    bodyPreview: body.substring(0, 50),
+    hasMetadata: !!metadata,
+    metadataKeys: metadata ? Object.keys(metadata) : [],
+    metadataStringified: metadata ? JSON.stringify(metadata) : '{}',
+    clientMessageId: finalClientMessageId,
+    clientMessageIdValid: uuidRegex.test(finalClientMessageId),
+  });
+
   const { data, error } = await supabase.rpc('send_chat_request', {
     p_target_id: targetId,
     p_lane: lane,
     p_body: body,
     p_metadata: metadata ?? {},
+    p_client_message_id: finalClientMessageId,
   });
 
   if (error) {
-    console.error('[feedService] Failed to send chat request:', error);
-    throw new Error(`Failed to send chat request: ${error.message}`);
+    console.error('[feedService] send_chat_request RPC error:', {
+      error,
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      params: {
+        p_target_id: targetId,
+        p_lane: lane,
+        p_body_length: body.length,
+        p_body_preview: body.substring(0, 100),
+        p_metadata: metadata,
+        p_client_message_id: finalClientMessageId,
+      },
+    });
+    throw new Error(error.message || 'Failed to send chat request');
   }
 
-  return data as { ok: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number };
+  // Log the response for debugging
+  console.log('[feedService] send_chat_request response:', data);
+
+  // Check if response indicates success
+  const result = data as { ok?: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number } | null;
+  
+  if (result?.error) {
+    console.error('[feedService] send_chat_request returned error:', result.error);
+    throw new Error(result.error);
+  }
+
+  if (result?.ok === false) {
+    console.error('[feedService] send_chat_request returned ok=false:', result);
+    throw new Error(result.error || 'Failed to send chat request');
+  }
+
+  console.log('[feedService] sendChatRequest completed successfully');
+  return result || { ok: true };
+}
+
+/**
+ * Generate a UUID v4 for client message IDs
+ */
+function generateClientMessageId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 /**

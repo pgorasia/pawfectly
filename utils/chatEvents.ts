@@ -41,6 +41,7 @@ export const chatEvents = new ChatEventEmitter();
  */
 export const CHAT_EVENTS = {
   FIRST_MESSAGE_SENT: 'first_message_sent',
+  CONVERSATION_CLOSED: 'conversation_closed',
 } as const;
 
 /**
@@ -52,4 +53,9 @@ export interface FirstMessageSentData {
   messageText: string;
   messageId: string;
   sentAt: string;
+}
+
+export interface ConversationClosedData {
+  conversationId: string; // The conversation UUID that was closed
+  reason: 'block' | 'unmatch' | 'report';
 }

@@ -43,7 +43,7 @@ import {
 } from '@/services/messages/messagesService';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
-import { chatEvents, CHAT_EVENTS, type FirstMessageSentData } from '@/utils/chatEvents';
+import { chatEvents, CHAT_EVENTS, type FirstMessageSentData, type ConversationClosedData } from '@/utils/chatEvents';
 import { truncatePreview } from '@/utils/chatHelpers';
 
 type LaneFilter = 'all' | 'pals' | 'match';
@@ -283,10 +283,83 @@ export default function MessagesScreen() {
       setActiveTab('messages');
     };
 
+    const handleConversationClosed = (data: ConversationClosedData) => {
+      console.log('[MessagesScreen] CONVERSATION_CLOSED event received:', data);
+
+      // Remove conversation from all lists (threads, matches, sent_requests, incoming_requests)
+      setMessagesHome((prev) => {
+        if (!prev) {
+          console.log('[MessagesScreen] No messagesHome data to update');
+          return prev;
+        }
+
+        // Remove from threads
+        const filteredThreads = prev.threads.filter(
+          (t) => t.conversation_id !== data.conversationId
+        );
+
+        // Remove from matches
+        const filteredMatches = prev.matches.filter(
+          (m) => (m.conversation_id || '') !== data.conversationId
+        );
+
+        // Remove from sent_requests
+        const filteredSentRequests = prev.sent_requests.filter(
+          (sr) => sr.conversation_id !== data.conversationId
+        );
+
+        const updated = {
+          ...prev,
+          threads: filteredThreads,
+          matches: filteredMatches,
+          sent_requests: filteredSentRequests,
+        };
+
+        // Update cache as well so reloads use filtered data (same pattern as incoming requests)
+        cacheRef.current.messagesHome = updated;
+        // Update timestamp so cached data is considered fresh and shown first on reload
+        cacheRef.current.timestamp = Date.now();
+
+        console.log('[MessagesScreen] Removed conversation from all lists:', {
+          conversationId: data.conversationId,
+          reason: data.reason,
+          threadsBefore: prev.threads.length,
+          threadsAfter: filteredThreads.length,
+          matchesBefore: prev.matches.length,
+          matchesAfter: filteredMatches.length,
+          sentRequestsBefore: prev.sent_requests.length,
+          sentRequestsAfter: filteredSentRequests.length,
+        });
+
+        return updated;
+      });
+
+      // Also remove from incoming requests if present and update cache
+      // This follows the same pattern as threads - update state and cache together
+      setIncomingRequests((prev) => {
+        const filtered = prev.filter((ir) => ir.conversation_id !== data.conversationId);
+        // Update cache as well so reloads use filtered data (same pattern as messagesHome)
+        cacheRef.current.incomingRequests = filtered;
+        // Update cache timestamp so cached data is shown first on reload
+        cacheRef.current.timestamp = Date.now();
+        console.log('[MessagesScreen] Removed from incoming requests:', {
+          conversationId: data.conversationId,
+          before: prev.length,
+          after: filtered.length,
+        });
+        return filtered;
+      });
+
+      // Remove from opened matches tracking if present
+      openedMatchesRef.current.delete(data.conversationId);
+    };
+
     chatEvents.on(CHAT_EVENTS.FIRST_MESSAGE_SENT, handleFirstMessage);
+    chatEvents.on(CHAT_EVENTS.CONVERSATION_CLOSED, handleConversationClosed);
 
     return () => {
       chatEvents.off(CHAT_EVENTS.FIRST_MESSAGE_SENT, handleFirstMessage);
+      chatEvents.off(CHAT_EVENTS.CONVERSATION_CLOSED, handleConversationClosed);
     };
   }, []);
 
@@ -388,6 +461,9 @@ export default function MessagesScreen() {
   };
 
   const handleThreadPress = (item: Thread | SentRequest | IncomingRequest) => {
+    // Check if this is a sent request by checking if it exists in sent_requests
+    const isSentRequest = messagesHome?.sent_requests?.some(sr => sr.conversation_id === item.conversation_id) ?? false;
+    
     router.push({
       pathname: '/messages/[conversationId]',
       params: {
@@ -395,12 +471,23 @@ export default function MessagesScreen() {
         peerName: item.display_name,
         peerPhotoPath: item.hero_storage_path || '',
         peerUserId: item.user_id,
+        isSentRequest: isSentRequest ? 'true' : undefined, // Flag for sent requests (pending acceptance)
       },
     });
   };
 
-  const handleRequestPress = (conversationId: string) => {
-    router.push(`/messages/request/${conversationId}`);
+  const handleRequestPress = (request: IncomingRequest) => {
+    router.push({
+      pathname: '/messages/[conversationId]',
+      params: {
+        conversationId: request.conversation_id,
+        peerName: request.display_name,
+        peerPhotoPath: request.hero_storage_path || '',
+        peerUserId: request.user_id,
+        isRequest: 'true', // Flag to indicate this is a request
+        requestLane: request.lane, // Lane to register like for
+      },
+    });
   };
 
   const handleLikedYouPress = () => {
@@ -634,7 +721,7 @@ export default function MessagesScreen() {
           data={sortedIncomingRequests}
           keyExtractor={(item) => item.conversation_id}
           renderItem={({ item }) => (
-            <RequestRow request={item} onPress={() => handleRequestPress(item.conversation_id)} />
+            <RequestRow request={item} onPress={() => handleRequestPress(item)} />
           )}
           scrollEnabled={false}
         />
@@ -671,7 +758,7 @@ export default function MessagesScreen() {
             data={sortedIncomingRequests}
             keyExtractor={(item) => item.conversation_id}
             renderItem={({ item }) => (
-              <RequestRow request={item} onPress={() => handleRequestPress(item.conversation_id)} />
+              <RequestRow request={item} onPress={() => handleRequestPress(item)} />
             )}
             scrollEnabled={false}
           />
