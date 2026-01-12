@@ -1,11 +1,52 @@
+import React from 'react';
 import { Stack } from 'expo-router';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute';
+import { useMe } from '@/contexts/MeContext';
+import { useProfileDraft } from '@/hooks/useProfileDraft';
+import { AppText } from '@/components/ui/AppText';
+import { Colors } from '@/constants/colors';
+import { Spacing } from '@/constants/spacing';
+
+function ProfileDataGate({ children }: { children: React.ReactNode }) {
+  const { meLoaded } = useMe();
+  const { draftHydrated } = useProfileDraft();
+
+  // Hold profile/onboarding screens until we have authoritative state from the server (Me)
+  // and the local draft has been hydrated from it.
+  if (!meLoaded || !draftHydrated) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+        <AppText variant="body" style={styles.loadingText}>
+          Loading your profile...
+        </AppText>
+      </View>
+    );
+  }
+
+  return <>{children}</>;
+}
 
 export default function ProfileLayout() {
   return (
     <ProtectedRoute>
-      <Stack screenOptions={{ headerShown: false }} />
+      <ProfileDataGate>
+        <Stack screenOptions={{ headerShown: false }} />
+      </ProfileDataGate>
     </ProtectedRoute>
   );
 }
 
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.background,
+  },
+  loadingText: {
+    marginTop: Spacing.md,
+    opacity: 0.7,
+  },
+});

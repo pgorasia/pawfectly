@@ -1,12 +1,13 @@
 /**
  * Auth Screen
- * Supports email/password signup and signin, plus Google OAuth
+ * Supports email/password signup and signin, plus Google OAuth (all platforms) and Apple OAuth (iOS)
  */
 
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, TextInput, TouchableOpacity, ActivityIndicator, Alert, Platform } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
+import { FontAwesome5 } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
@@ -133,19 +134,19 @@ export default function AuthScreen() {
     }
   };
 
-  const handleGoogleAuth = async () => {
+  const handleOAuth = async (provider: 'google' | 'apple') => {
     setLoading(true);
     setError(null);
 
     try {
-      // Google OAuth with PKCE flow for Expo
+      // OAuth with PKCE flow for Expo
       const redirectTo = Platform.select({
         web: typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : undefined,
         default: `${process.env.EXPO_PUBLIC_SUPABASE_URL}/auth/v1/callback`,
       });
 
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
+        provider: provider,
         options: {
           redirectTo: redirectTo,
           skipBrowserRedirect: false,
@@ -153,7 +154,7 @@ export default function AuthScreen() {
       });
 
       if (oauthError) {
-        setError(oauthError.message || 'Google sign in failed');
+        setError(oauthError.message || `${provider === 'google' ? 'Google' : 'Apple'} sign in failed`);
         setLoading(false);
         return;
       }
@@ -189,9 +190,17 @@ export default function AuthScreen() {
       // On web, the redirect will happen automatically
       // AuthContext will handle the session update
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Google sign in failed');
+      setError(err instanceof Error ? err.message : `${provider === 'google' ? 'Google' : 'Apple'} sign in failed`);
       setLoading(false);
     }
+  };
+
+  const handleGoogleAuth = async () => {
+    await handleOAuth('google');
+  };
+
+  const handleAppleAuth = async () => {
+    await handleOAuth('apple');
   };
 
   return (
@@ -275,14 +284,33 @@ export default function AuthScreen() {
             <View style={styles.dividerLine} />
           </View>
 
-          <AppButton
-            variant="ghost"
+          <TouchableOpacity
             onPress={handleGoogleAuth}
             disabled={loading}
-            style={styles.button}
+            style={[styles.socialButton, loading && styles.disabled]}
           >
-            Continue with Google
-          </AppButton>
+            <View style={styles.socialButtonContent}>
+              <FontAwesome5 name="google" size={20} color={Colors.primary} style={styles.icon} />
+              <AppText variant="body" color="primary" style={styles.socialButtonText}>
+                Continue with Google
+              </AppText>
+            </View>
+          </TouchableOpacity>
+
+          {Platform.OS === 'ios' && (
+            <TouchableOpacity
+              onPress={handleAppleAuth}
+              disabled={loading}
+              style={[styles.socialButton, loading && styles.disabled]}
+            >
+              <View style={styles.socialButtonContent}>
+                <FontAwesome5 name="apple" size={20} color={Colors.primary} style={styles.icon} />
+                <AppText variant="body" color="primary" style={styles.socialButtonText}>
+                  Continue with Apple
+                </AppText>
+              </View>
+            </TouchableOpacity>
+          )}
 
           <View style={styles.switchContainer}>
             <AppText variant="body" style={styles.switchText}>
@@ -378,6 +406,33 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   switchLink: {
+    fontWeight: '600',
+  },
+  socialButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    borderRadius: 8,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    width: '100%',
+    marginBottom: Spacing.md,
+  },
+  disabled: {
+    opacity: 0.5,
+  },
+  socialButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  icon: {
+    marginRight: Spacing.sm,
+  },
+  socialButtonText: {
     fontWeight: '600',
   },
 });

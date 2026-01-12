@@ -153,8 +153,12 @@ export default function OurPhotosTab() {
 
       {/* Dog Photos - same order as dogs from Me */}
       {me.dogs.map((dog) => {
-        const bucket = dogBuckets[dog.slot];
-        if (!bucket) return null;
+        // Use bucket if it exists, otherwise use empty bucket state (prevents flicker on initial load)
+        const bucket = dogBuckets[dog.slot] || {
+          photos: [],
+          isUploading: false,
+          uploadError: null,
+        };
 
         return (
           <DogPhotoBucket

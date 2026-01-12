@@ -11,6 +11,16 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useMe } from '@/contexts/MeContext';
 import { useProfileDraft } from '@/hooks/useProfileDraft';
 
+function convertDisplayToDbDate(displayDate: string): string | null {
+  // displayDate expected as mm/dd/yyyy
+  if (!displayDate) return null;
+  const parts = displayDate.split('/');
+  if (parts.length !== 3) return null;
+  const [month, day, year] = parts;
+  if (!year || !month || !day) return null;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
 export function DraftBootstrapper() {
   const { user } = useAuth();
   const { me, meLoaded } = useMe();
@@ -48,7 +58,8 @@ export function DraftBootstrapper() {
         ? {
             user_id: me.profile.user_id,
             display_name: me.profile.display_name || null,
-            dob: me.profile.dob || null,
+            // Me stores dob as display format (mm/dd/yyyy). loadFromDatabase expects DB format.
+            dob: convertDisplayToDbDate(me.profile.dob || ''),
             gender: me.profile.gender || null,
             city: me.profile.city || null,
             latitude: me.profile.latitude || null,
@@ -87,6 +98,8 @@ export function DraftBootstrapper() {
         play_styles: dog.playStyles || [], // Convert playStyles back to play_styles
         temperament: dog.temperament,
         is_active: true,
+        // Attach prompts so loadFromDatabase can hydrate them into draft dogs.
+        _prompts: dog.prompts || [],
       }));
 
       loadFromDatabase({

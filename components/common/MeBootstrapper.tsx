@@ -64,6 +64,7 @@ export function MeBootstrapper() {
               profile: bootstrapData.draft.profile,
               dogs: bootstrapData.draft.dogs,
               preferences: bootstrapData.draft.preferences,
+              badges: bootstrapData.draft.badges,
             });
           }
         })

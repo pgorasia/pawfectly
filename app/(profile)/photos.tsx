@@ -19,7 +19,7 @@ import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { usePhotoBuckets } from '@/hooks/usePhotoBuckets';
 import { useAuth } from '@/contexts/AuthContext';
 import { useMe } from '@/contexts/MeContext';
-import { setCurrentStep, dbDogToDogProfile } from '@/services/supabase/onboardingService';
+import { dbDogToDogProfile } from '@/services/supabase/onboardingService';
 import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
 import { pickImage } from '@/services/media/imagePicker';
 import { uploadPhotoWithValidation } from '@/services/media/photoUpload';
@@ -34,12 +34,10 @@ export default function PhotosScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { me } = useMe();
-  const { draft } = useProfileDraft();
+  const { draft, updateDogs } = useProfileDraft();
 
   // Cropper modal hook
   const { isOpen, imageUri, openCropper, closeCropper, handleConfirm } = useCropperModal();
-
-  const { loadFromDatabase } = useProfileDraft();
 
   // Load dogs from database if draft is empty (especially important for corrective action)
   React.useEffect(() => {
@@ -61,12 +59,8 @@ export default function PhotosScreen() {
         }
         
         if (dogs && dogs.length > 0) {
-          // Load dogs into draft context (loadFromDatabase handles conversion)
-          loadFromDatabase({
-            profile: null,
-            dogs: dogs,
-            preferences: null,
-          });
+          // Merge dogs into draft context without resetting other draft sections
+          updateDogs(dogs.map(dbDogToDogProfile));
         }
       } catch (error) {
         console.error('[PhotosScreen] Failed to load dogs:', error);
@@ -74,7 +68,7 @@ export default function PhotosScreen() {
     };
 
     loadDogsIfNeeded();
-  }, [user?.id, draft.dogs.length, loadFromDatabase]);
+  }, [user?.id, draft.dogs.length, updateDogs]);
 
   // Compute corrective action status from cached values in MeContext
   const lifecycleStatus = me.profile?.lifecycle_status;

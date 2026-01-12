@@ -3,16 +3,18 @@
  * Displays photo grid for human photos with upload functionality
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
+import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
 import type { Photo } from '@/types/photo';
 import type { PhotoBucketState } from '@/hooks/usePhotoBuckets';
 import { supabase } from '@/services/supabase/supabaseClient';
+import { isPhotoVerified } from '@/services/badges/badgeService';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 interface HumanPhotoBucketProps {
@@ -31,6 +33,29 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
   onReplace,
 }) => {
   const { photos, isUploading, uploadError } = bucket;
+  const [verifiedPhotoIds, setVerifiedPhotoIds] = useState<Set<string>>(new Set());
+
+  // Check which photos are verified
+  useEffect(() => {
+    const checkVerifiedPhotos = async () => {
+      const verified = new Set<string>();
+      for (const photo of photos) {
+        try {
+          const isVerified = await isPhotoVerified(photo.id);
+          if (isVerified) {
+            verified.add(photo.id);
+          }
+        } catch (error) {
+          console.error(`[HumanPhotoBucket] Failed to check verification for photo ${photo.id}:`, error);
+        }
+      }
+      setVerifiedPhotoIds(verified);
+    };
+
+    if (photos.length > 0) {
+      checkVerifiedPhotos();
+    }
+  }, [photos]);
 
   const handleRemove = (photoId: string, e: any) => {
     e.stopPropagation();
@@ -116,6 +141,7 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
         {photos.map((photo, index) => {
           const imageUrl = photoUrls.get(photo.id) ?? null;
           const isRejected = photo.status === 'rejected';
+          const isVerified = verifiedPhotoIds.has(photo.id);
           return (
             <View key={photo.id} style={styles.photoTileContainer}>
               <View
@@ -137,6 +163,11 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
                       cachePolicy="memory-disk"
                       transition={200}
                     />
+                    {isVerified && (
+                      <View style={styles.verifiedBadge}>
+                        <IconSymbol name="checkmark.seal.fill" size={20} color={Colors.primary} />
+                      </View>
+                    )}
                   </TouchableOpacity>
                 ) : (
                   <View style={styles.photoPlaceholder}>
@@ -268,6 +299,19 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.text + '20',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  verifiedBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
   removeButton: {
     position: 'absolute',

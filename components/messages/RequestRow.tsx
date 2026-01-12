@@ -46,6 +46,9 @@ export function RequestRow({ request, onPress }: RequestRowProps) {
             </AppText>
           </View>
         )}
+        <View style={styles.badgeContainer}>
+          <LaneBadge lane={request.lane} />
+        </View>
       </View>
       
       <View style={styles.content}>
@@ -79,12 +82,21 @@ const styles = StyleSheet.create({
     borderBottomColor: 'rgba(31, 41, 55, 0.1)',
   },
   avatarContainer: {
+    position: 'relative',
     marginRight: Spacing.md,
   },
   avatar: {
     width: 56,
     height: 56,
     borderRadius: 28,
+  },
+  badgeContainer: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 2,
   },
   avatarPlaceholder: {
     backgroundColor: Colors.primary + '20',

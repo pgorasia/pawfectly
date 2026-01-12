@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useCallback, useMemo } from 'react';
 import {
   dbDogToDogProfile,
   dbProfileToHumanProfile,
@@ -104,11 +104,11 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
   const [draft, setDraft] = useState<ProfileDraft>(defaultDraft);
   const [draftHydrated, setDraftHydrated] = useState(false);
 
-  const updateDogs = (dogs: DogProfile[]) => {
+  const updateDogs = useCallback((dogs: DogProfile[]) => {
     setDraft((prev) => ({ ...prev, dogs }));
-  };
+  }, []);
 
-  const addDog = (dog: DogProfile) => {
+  const addDog = useCallback((dog: DogProfile) => {
     setDraft((prev) => {
       // Assign lowest available slot (1-3) not used by existing dogs
       const usedSlots = prev.dogs.map(d => d.slot).filter(s => s >= 1 && s <= 3);
@@ -122,31 +122,31 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
       const dogWithSlot = { ...dog, slot: newSlot };
       return { ...prev, dogs: [...prev.dogs, dogWithSlot] };
     });
-  };
+  }, []);
 
-  const updateDog = (id: string, updates: Partial<DogProfile>) => {
+  const updateDog = useCallback((id: string, updates: Partial<DogProfile>) => {
     setDraft((prev) => ({
       ...prev,
       dogs: prev.dogs.map((dog) => (dog.id === id ? { ...dog, ...updates } : dog)),
     }));
-  };
+  }, []);
 
-  const updateHuman = (updates: Partial<HumanProfile>) => {
+  const updateHuman = useCallback((updates: Partial<HumanProfile>) => {
     setDraft((prev) => ({
       ...prev,
       human: { ...prev.human, ...updates },
     }));
-  };
+  }, []);
 
-  const updateLocation = (location: Location) => {
+  const updateLocation = useCallback((location: Location) => {
     setDraft((prev) => ({ ...prev, location }));
-  };
+  }, []);
 
-  const updateConnectionStyles = (styles: ConnectionStyle[]) => {
+  const updateConnectionStyles = useCallback((styles: ConnectionStyle[]) => {
     setDraft((prev) => ({ ...prev, connectionStyles: styles }));
-  };
+  }, []);
 
-  const updatePreferences = (style: ConnectionStyle, preferences: Preferences) => {
+  const updatePreferences = useCallback((style: ConnectionStyle, preferences: Preferences) => {
     setDraft((prev) => ({
       ...prev,
       preferences: {
@@ -154,9 +154,9 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
         [style]: preferences,
       },
     }));
-  };
+  }, []);
 
-  const loadFromDatabase = (data: {
+  const loadFromDatabase = useCallback((data: {
     profile: any;
     dogs: any[];
     preferences: any;
@@ -178,7 +178,17 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
 
     // Load dogs
     if (data.dogs && data.dogs.length > 0) {
-      newDraft.dogs = data.dogs.map(dbDogToDogProfile);
+      newDraft.dogs = data.dogs.map((dbDog: any) => {
+        // Prompts are stored in a separate table and may be attached to the dog payload
+        // by the bootstrap layer as `_prompts` (preferred) or `prompts`.
+        const prompts = (dbDog?._prompts ?? dbDog?.prompts) as
+          | Array<{ prompt_question_id: string; answer_text: string; display_order: number }>
+          | undefined;
+
+        const normalizedPrompts = Array.isArray(prompts) && prompts.length > 0 ? prompts : undefined;
+        // Passing the full dbDog object is safe; dbDogToDogProfile only reads known columns.
+        return dbDogToDogProfile(dbDog, normalizedPrompts);
+      });
     }
 
     // Load preferences
@@ -190,28 +200,45 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
 
     setDraft(newDraft);
     setDraftHydrated(true);
-  };
+  }, []);
 
-  const reset = () => {
+  const reset = useCallback(() => {
     setDraft(defaultDraft);
     setDraftHydrated(false);
-  };
+  }, []);
+
+  const ctxValue: ProfileDraftContextType = useMemo(
+    () => ({
+      draft,
+      draftHydrated,
+      updateDogs,
+      addDog,
+      updateDog,
+      updateHuman,
+      updateLocation,
+      updateConnectionStyles,
+      updatePreferences,
+      loadFromDatabase,
+      reset,
+    }),
+    [
+      draft,
+      draftHydrated,
+      updateDogs,
+      addDog,
+      updateDog,
+      updateHuman,
+      updateLocation,
+      updateConnectionStyles,
+      updatePreferences,
+      loadFromDatabase,
+      reset,
+    ]
+  );
 
   return (
     <ProfileDraftContext.Provider
-      value={{
-        draft,
-        draftHydrated,
-        updateDogs,
-        addDog,
-        updateDog,
-        updateHuman,
-        updateLocation,
-        updateConnectionStyles,
-        updatePreferences,
-        loadFromDatabase,
-        reset,
-      }}
+      value={ctxValue}
     >
       {children}
     </ProfileDraftContext.Provider>

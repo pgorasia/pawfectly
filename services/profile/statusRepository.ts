@@ -48,6 +48,12 @@ export interface BootstrapData {
     profile: any | null;
     dogs: any[];
     preferences: any | null;
+    badges?: Array<{
+      type: string;
+      earned: boolean;
+      earnedAt: string | null;
+      metadata: Record<string, any> | null;
+    }>;
   };
 }
 
@@ -198,6 +204,7 @@ const MINIMAL_BOOTSTRAP_DATA = (userId: string | null): BootstrapData => ({
     profile: null,
     dogs: [],
     preferences: null,
+    badges: [],
   },
 });
 
@@ -334,7 +341,7 @@ export async function loadBootstrap(checkFn?: BootstrapCheckFn, userId?: string 
       .eq('user_id', currentUserId)
       .maybeSingle();
 
-    // Final check before returning
+    // Check again after await
     check = await getCheck();
     if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
       console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
@@ -345,6 +352,73 @@ export async function loadBootstrap(checkFn?: BootstrapCheckFn, userId?: string 
       console.error('[statusRepository] Failed to load preferences:', prefsError);
     }
 
+    // Fetch badges (only earned badges)
+    const { data: badges, error: badgesError } = await supabase
+      .from('trust_badges')
+      .select('badge_type, earned_at, metadata, status')
+      .eq('user_id', currentUserId)
+      .eq('status', 'earned');
+
+    // Check again after await
+    check = await getCheck();
+    if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
+      console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
+      return MINIMAL_BOOTSTRAP_DATA(check.sessionUserId);
+    }
+
+    if (badgesError) {
+      console.error('[statusRepository] Failed to load badges (continuing without badges):', badgesError);
+    }
+
+    // Fetch profile for selfie verification status
+    const { data: profileForBadges, error: profileForBadgesError } = await supabase
+      .from('profiles')
+      .select('selfie_verified_at, selfie_verified_photo_id')
+      .eq('user_id', currentUserId)
+      .maybeSingle();
+
+    // Check again after await
+    check = await getCheck();
+    if (!check.shouldContinue || check.sessionUserId !== currentUserId) {
+      console.log('[statusRepository] Bootstrap cancelled (session changed or deletion started)');
+      return MINIMAL_BOOTSTRAP_DATA(check.sessionUserId);
+    }
+
+    // Build badge statuses
+    const badgeStatuses: Array<{
+      type: string;
+      earned: boolean;
+      earnedAt: string | null;
+      metadata: Record<string, any> | null;
+    }> = [];
+
+    // Email verified - always true (will be implemented later with OTP)
+    badgeStatuses.push({
+      type: 'email_verified',
+      earned: true,
+      earnedAt: null,
+      metadata: null,
+    });
+
+    // Photo with dog - check trust_badges
+    const photoWithDogBadge = badges?.find(b => b.badge_type === 'photo_with_dog');
+    badgeStatuses.push({
+      type: 'photo_with_dog',
+      earned: !!photoWithDogBadge,
+      earnedAt: photoWithDogBadge?.earned_at || null,
+      metadata: photoWithDogBadge?.metadata || null,
+    });
+
+    // Selfie verified - check profile and trust_badges
+    const selfieBadge = badges?.find(b => b.badge_type === 'selfie_verified');
+    const isSelfieVerified = profileForBadges?.selfie_verified_at !== null;
+    badgeStatuses.push({
+      type: 'selfie_verified',
+      earned: isSelfieVerified,
+      earnedAt: profileForBadges?.selfie_verified_at || selfieBadge?.earned_at || null,
+      metadata: selfieBadge?.metadata || (profileForBadges?.selfie_verified_photo_id ? { verified_photo_id: profileForBadges.selfie_verified_photo_id } : null),
+    });
+
     return {
       profile: profile || null,
       onboarding,
@@ -352,6 +426,7 @@ export async function loadBootstrap(checkFn?: BootstrapCheckFn, userId?: string 
         profile: profile || null,
         dogs: dogsWithPrompts || [],
         preferences: preferences || null,
+        badges: badgeStatuses,
       },
     };
   } catch (error) {

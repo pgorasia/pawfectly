@@ -321,6 +321,7 @@ export default function ConnectionStyleScreen() {
           profile: bootstrapData.draft.profile,
           dogs: bootstrapData.draft.dogs, // Dogs now include prompts via _prompts property
           preferences: bootstrapData.draft.preferences,
+          badges: bootstrapData.draft.badges || [],
         });
         // Update DraftContext (for Account tabs that read from draft)
         loadFromDatabase({

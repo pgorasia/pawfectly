@@ -4,6 +4,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMe } from '@/contexts/MeContext';
 import {
   deletePhoto,
   reorderPhotosAfterDeletion,
@@ -14,6 +15,15 @@ import { resizeAndUploadPhoto } from '@/services/media/resizeAndUploadPhoto';
 import { supabase } from '@/services/supabase/supabaseClient';
 import { sendPhotoRejectedNotification } from '@/services/notifications/photoNotifications';
 import type { Photo, BucketType } from '@/types/photo';
+
+// In-memory cache to avoid flicker when navigating between screens that use photo buckets
+// Keyed by user_id. This is intentionally session-scoped (cleared on app reload).
+const photoBucketsCache = new Map<string, {
+  dogBuckets: Record<number, PhotoBucketState>;
+  humanBucket: PhotoBucketState;
+  hasHumanDogPhoto: boolean;
+  updatedAt: number;
+}>();
 
 export interface PhotoBucketState {
   photos: Photo[];
@@ -42,7 +52,14 @@ export interface UsePhotoBucketsReturn {
  */
 export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
   const { user } = useAuth();
-  const [dogBuckets, setDogBuckets] = useState<Record<number, PhotoBucketState>>({});
+  const { refreshBadges } = useMe();
+  const [dogBuckets, setDogBuckets] = useState<Record<number, PhotoBucketState>>(() => {
+    const initial: Record<number, PhotoBucketState> = {};
+    dogSlots.forEach((slot) => {
+      initial[slot] = { photos: [], isUploading: false, uploadError: null };
+    });
+    return initial;
+  });
   const [humanBucket, setHumanBucket] = useState<PhotoBucketState>({
     photos: [],
     isUploading: false,
@@ -50,18 +67,21 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
   });
   const [hasHumanDogPhoto, setHasHumanDogPhoto] = useState(false);
 
-  // Initialize dog buckets
+  const dogSlotsKey = dogSlots.join(',');
+
+  // Ensure bucket keys exist for the current dogSlots without wiping existing photos (prevents flicker).
   useEffect(() => {
-    const initialBuckets: Record<number, PhotoBucketState> = {};
-    dogSlots.forEach((slot) => {
-      initialBuckets[slot] = {
-        photos: [],
-        isUploading: false,
-        uploadError: null,
-      };
+    if (dogSlots.length === 0) return;
+    setDogBuckets((prev) => {
+      const next: Record<number, PhotoBucketState> = { ...prev };
+      for (const slot of dogSlots) {
+        if (!next[slot]) {
+          next[slot] = { photos: [], isUploading: false, uploadError: null };
+        }
+      }
+      return next;
     });
-    setDogBuckets(initialBuckets);
-  }, [dogSlots]);
+  }, [dogSlotsKey]);
 
   // Load all photos from Supabase in a single query, then group client-side
   const refreshPhotos = useCallback(async () => {
@@ -130,17 +150,43 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
       const hasHumanDog = allPhotosArray.some((photo) => photo.contains_dog && photo.contains_human) || 
                           humanPhotos.some((photo) => photo.contains_dog && photo.contains_human);
       setHasHumanDogPhoto(hasHumanDog);
+
+      // Update in-memory cache (used for fast restores when navigating back to this screen)
+      photoBucketsCache.set(userId, {
+        dogBuckets: dogBucketsData,
+        humanBucket: {
+          photos: humanPhotos,
+          isUploading: false,
+          uploadError: null,
+        },
+        hasHumanDogPhoto: hasHumanDog,
+        updatedAt: Date.now(),
+      });
     } catch (error) {
       console.error('Failed to refresh photos:', error);
     }
   }, [dogSlots, user?.id]);
-
-  // Load photos on mount and when user changes
+  // Load photos on mount and when user changes.
+  // Restore from in-memory cache immediately to avoid blank state, then refresh in background.
   useEffect(() => {
-    if (user?.id) {
-      refreshPhotos();
+    if (!user?.id) return;
+
+    const cached = photoBucketsCache.get(user.id);
+    if (cached) {
+      // Ensure all current dogSlots exist in cached payload
+      const nextDogBuckets: Record<number, PhotoBucketState> = { ...cached.dogBuckets };
+      for (const slot of dogSlots) {
+        if (!nextDogBuckets[slot]) {
+          nextDogBuckets[slot] = { photos: [], isUploading: false, uploadError: null };
+        }
+      }
+      setDogBuckets(nextDogBuckets);
+      setHumanBucket(cached.humanBucket);
+      setHasHumanDogPhoto(cached.hasHumanDogPhoto);
     }
-  }, [user?.id, refreshPhotos]);
+
+    refreshPhotos();
+  }, [user?.id, dogSlotsKey, refreshPhotos]);
 
   // Debounce timer for realtime updates
   const refreshDebounceRef = useRef<NodeJS.Timeout | null>(null);
@@ -218,6 +264,17 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
       setHasHumanDogPhoto(true);
     }
   }, []);
+
+  // Keep cache in sync with local state mutations (upload/remove/reorder)
+  useEffect(() => {
+    if (!user?.id) return;
+    photoBucketsCache.set(user.id, {
+      dogBuckets,
+      humanBucket,
+      hasHumanDogPhoto,
+      updatedAt: Date.now(),
+    });
+  }, [user?.id, dogBuckets, humanBucket, hasHumanDogPhoto]);
 
   // Set up realtime subscription for photo status changes
   useEffect(() => {
@@ -358,6 +415,11 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         if (result.photo.contains_dog && result.photo.contains_human) {
           setHasHumanDogPhoto(true);
         }
+
+        // Refresh badges after photo upload (may award photo_with_dog badge)
+        refreshBadges().catch((error) => {
+          console.error('[usePhotoBuckets] Failed to refresh badges after upload:', error);
+        });
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Failed to upload photo';
@@ -399,7 +461,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         }
       }
     },
-    [dogSlots, user]
+    [dogSlots, user, refreshBadges]
   );
 
   const removePhoto = useCallback(
@@ -442,11 +504,16 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
 
         // Refresh to check human+dog status and get updated display_order
         await refreshPhotos();
+
+        // Refresh badges after photo deletion (may revoke photo_with_dog badge)
+        refreshBadges().catch((error) => {
+          console.error('[usePhotoBuckets] Failed to refresh badges after deletion:', error);
+        });
       } catch (error) {
         console.error('Failed to remove photo:', error);
       }
     },
-    [refreshPhotos, user, dogBuckets, humanBucket]
+    [refreshPhotos, refreshBadges, user, dogBuckets, humanBucket]
   );
 
   const replacePhoto = useCallback(
@@ -578,6 +645,11 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         }
 
         console.log(`[usePhotoBuckets] ✅ Photo replaced. New photo ${photo.id} uploaded.`);
+
+        // Refresh badges after photo replacement (may award/revoke photo_with_dog badge)
+        refreshBadges().catch((error) => {
+          console.error('[usePhotoBuckets] Failed to refresh badges after replacement:', error);
+        });
       } catch (error) {
         console.error('Failed to replace photo:', error);
         const errorMessage =
@@ -602,7 +674,7 @@ export function usePhotoBuckets(dogSlots: number[]): UsePhotoBucketsReturn {
         }
       }
     },
-    [user]
+    [user, refreshBadges]
   );
 
   return {

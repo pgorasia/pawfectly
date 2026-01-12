@@ -371,7 +371,7 @@ export default function DogsScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { me } = useMe();
-  const { draft, updateDogs, updateDog } = useProfileDraft();
+  const { draft, draftHydrated, updateDogs, updateDog } = useProfileDraft();
 
   // Set current step when page loads or when user navigates back to this screen
   // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
@@ -402,6 +402,10 @@ export default function DogsScreen() {
 
   // Ensure draft has at least one dog
   useEffect(() => {
+    // Wait for draft to hydrate from server-state (Me) before creating placeholders.
+    // This prevents a race where an empty placeholder dog masks real dogs loaded shortly after login.
+    if (!draftHydrated) return;
+
     if (draft.dogs.length === 0) {
       const defaultDog: DogProfile = {
         id: `dog-${Date.now()}`,
@@ -416,7 +420,7 @@ export default function DogsScreen() {
       };
       updateDogs([defaultDog]);
     }
-  }, [draft.dogs.length, updateDogs]);
+  }, [draftHydrated, draft.dogs.length, updateDogs]);
 
   // Get dogs from draft
   const dogs = draft.dogs.slice(0, MAX_DOGS).map((dog, index) => ({

@@ -17,7 +17,7 @@ export interface ValidationResult {
  * Validates photo buckets against requirements
  * Rules:
  * - At least 1 dog photo (from dog buckets with contains_dog=true)
- * - At least 1 human photo (from human bucket OR any photo with contains_both=true)
+ * - At least 1 human photo (from human bucket OR any photo with contains_dog=true AND contains_human=true)
  */
 export function usePhotoValidation(
   dogBuckets: Record<number, PhotoBucketState>,
@@ -50,11 +50,11 @@ export function usePhotoValidation(
       }
     }
 
-    // Count human photos (ONLY from human bucket OR photos with contains_both=true)
+    // Count human photos (ONLY from human bucket OR photos with contains_dog=true AND contains_human=true)
     // Important: Don't count dog bucket photos that only have contains_human=true
     // Human photos must be either:
     // 1. In the human bucket with contains_human=true (and NOT NEITHER/UNKNOWN), OR
-    // 2. Any photo (from any bucket) with contains_both=true
+    // 2. Any photo (from any bucket) with contains_dog=true AND contains_human=true
     
     const validHumanPhotos = humanBucket.photos.filter(
       (photo) => 

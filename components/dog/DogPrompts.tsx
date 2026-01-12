@@ -28,7 +28,14 @@ export function DogPrompts({ dog, onUpdate }: DogPromptsProps) {
     const loadPrompts = async () => {
       try {
         const availablePrompts = await getPromptQuestions();
-        setPrompts(availablePrompts);
+        // Filter out fallback prompts (IDs starting with 'fallback-') since they're not valid UUIDs
+        // and cannot be saved to the database
+        const validPrompts = availablePrompts.filter(p => !p.id.startsWith('fallback-'));
+        setPrompts(validPrompts);
+        
+        if (validPrompts.length < availablePrompts.length) {
+          console.warn(`[DogPrompts] Filtered out ${availablePrompts.length - validPrompts.length} fallback prompts`);
+        }
       } catch (error) {
         console.error('[DogPrompts] Failed to load prompts:', error);
       } finally {

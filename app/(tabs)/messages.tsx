@@ -4,7 +4,7 @@
  * - Top lane filter (All/Pals/Match) that filters everything
  * - Matches carousel + "Liked You" card (always shown if liked_you_count > 0)
  * - Messages tab with active threads
- * - Requests tab with Received/Sent sub-tabs (shown when both exist)
+ * - Requests tab with Received/Sent sub-tabs (always shown)
  * - Client-side filtering (no network calls on filter change)
  * - SWR-like caching with useRef
  * - Pull-to-refresh
@@ -586,17 +586,9 @@ export default function MessagesScreen() {
 
   /**
    * Requests sub-tabs (Received / Sent)
-   * Only show tabs if both have entries
+   * Always show tabs
    */
   const renderRequestsSubTabs = () => {
-    const hasReceived = sortedIncomingRequests.length > 0;
-    const hasSent = sortedSentRequests.length > 0;
-
-    // Don't show tabs if only one type exists
-    if (!hasReceived || !hasSent) {
-      return null;
-    }
-
     return (
       <View style={styles.subTabsContainer}>
         <TouchableOpacity
@@ -701,83 +693,67 @@ export default function MessagesScreen() {
     // If neither, show empty state
     if (!hasReceived && !hasSent) {
       return (
-        <View style={styles.emptyState}>
-          <AppText variant="body" style={styles.emptyStateText}>
-            No requests
-          </AppText>
-          <AppText variant="caption" style={styles.emptyStateSubtext}>
-            {laneFilter === 'all'
-              ? 'New connection requests will appear here'
-              : `No ${laneFilter === 'pals' ? 'Pals' : 'Match'} requests`}
-          </AppText>
-        </View>
+        <>
+          {renderRequestsSubTabs()}
+          <View style={styles.emptyState}>
+            <AppText variant="body" style={styles.emptyStateText}>
+              No requests
+            </AppText>
+            <AppText variant="caption" style={styles.emptyStateSubtext}>
+              {laneFilter === 'all'
+                ? 'New connection requests will appear here'
+                : `No ${laneFilter === 'pals' ? 'Pals' : 'Match'} requests`}
+            </AppText>
+          </View>
+        </>
       );
     }
 
-    // If only received, show received list
-    if (hasReceived && !hasSent) {
-      return (
-        <FlatList
-          data={sortedIncomingRequests}
-          keyExtractor={(item) => item.conversation_id}
-          renderItem={({ item }) => (
-            <RequestRow request={item} onPress={() => handleRequestPress(item)} />
-          )}
-          scrollEnabled={false}
-        />
-      );
-    }
-
-    // If only sent, show sent list
-    if (!hasReceived && hasSent) {
-      return (
-        <FlatList
-          data={sortedSentRequests}
-          keyExtractor={(item) => item.conversation_id}
-          renderItem={({ item }) => (
-            <RequestRow
-              request={{
-                ...item,
-                display_name: item.display_name,
-                preview: 'Pending...',
-              }}
-              onPress={() => handleThreadPress(item)}
-            />
-          )}
-          scrollEnabled={false}
-        />
-      );
-    }
-
-    // Both exist, show tabs and active list
+    // Always show tabs and active list
     return (
       <>
         {renderRequestsSubTabs()}
         {requestsSubTab === 'received' ? (
-          <FlatList
-            data={sortedIncomingRequests}
-            keyExtractor={(item) => item.conversation_id}
-            renderItem={({ item }) => (
-              <RequestRow request={item} onPress={() => handleRequestPress(item)} />
-            )}
-            scrollEnabled={false}
-          />
+          hasReceived ? (
+            <FlatList
+              data={sortedIncomingRequests}
+              keyExtractor={(item) => item.conversation_id}
+              renderItem={({ item }) => (
+                <RequestRow request={item} onPress={() => handleRequestPress(item)} />
+              )}
+              scrollEnabled={false}
+            />
+          ) : (
+            <View style={styles.emptyState}>
+              <AppText variant="body" style={styles.emptyStateText}>
+                No received requests
+              </AppText>
+            </View>
+          )
         ) : (
-          <FlatList
-            data={sortedSentRequests}
-            keyExtractor={(item) => item.conversation_id}
-            renderItem={({ item }) => (
-              <RequestRow
-                request={{
-                  ...item,
-                  display_name: item.display_name,
-                  preview: 'Pending...',
-                }}
-                onPress={() => handleThreadPress(item)}
-              />
-            )}
-            scrollEnabled={false}
-          />
+          hasSent ? (
+            <FlatList
+              data={sortedSentRequests}
+              keyExtractor={(item) => item.conversation_id}
+              renderItem={({ item }) => (
+                <RequestRow
+                  request={{
+                    ...item,
+                    display_name: item.display_name,
+                    preview: 'Pending...',
+                  }}
+                  onPress={() => handleThreadPress(item)}
+                />
+              )}
+              scrollEnabled={false}
+            />
+          ) : (
+            <View style={styles.emptyState}>
+              <AppText variant="body" style={styles.emptyStateText}>
+                No sent requests
+              </AppText>
+            </View>
+          )
         )}
       </>
     );

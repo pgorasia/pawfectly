@@ -9,7 +9,10 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "We need access to your camera to verify your selfie matches your profile photos."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -20,7 +23,10 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.pratikgorasia.pawfectly"
+      "package": "com.pratikgorasia.pawfectly",
+      "permissions": [
+        "CAMERA"
+      ]
     },
     "web": {
       "output": "static",

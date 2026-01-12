@@ -135,6 +135,23 @@ export async function saveDogPromptAnswers(
   }>
 ): Promise<void> {
   try {
+    // UUID validation regex
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    // Filter out answers with invalid UUIDs (e.g., fallback prompts like 'fallback-5')
+    const validAnswers = answers.filter(answer => {
+      const isValid = uuidRegex.test(answer.prompt_question_id);
+      if (!isValid) {
+        console.warn(`[dogPromptService] Skipping answer with invalid prompt_question_id: ${answer.prompt_question_id}`);
+      }
+      return isValid;
+    });
+
+    if (validAnswers.length === 0 && answers.length > 0) {
+      console.warn('[dogPromptService] No valid answers to save (all prompt_question_ids were invalid)');
+      // Still proceed to delete existing answers if needed
+    }
+
     // Get existing answers for this dog
     const { data: existingAnswers } = await supabase
       .from('dog_prompt_answers')
@@ -144,8 +161,8 @@ export async function saveDogPromptAnswers(
 
     const existingIds = new Set(existingAnswers?.map(a => a.id) || []);
 
-    // Prepare upsert data
-    const answersToUpsert = answers.map((answer) => ({
+    // Prepare upsert data (only for valid answers)
+    const answersToUpsert = validAnswers.map((answer) => ({
       user_id: userId,
       dog_slot: dogSlot,
       prompt_question_id: answer.prompt_question_id,
@@ -168,8 +185,8 @@ export async function saveDogPromptAnswers(
       }
     }
 
-    // Delete answers that are no longer present
-    const currentDisplayOrders = new Set(answers.map(a => a.display_order));
+    // Delete answers that are no longer present (use validAnswers, not answers)
+    const currentDisplayOrders = new Set(validAnswers.map(a => a.display_order));
     const answersToDelete = existingAnswers?.filter(
       (a) => !currentDisplayOrders.has(a.display_order)
     ) || [];

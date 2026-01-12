@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { View, StyleSheet, ScrollView, TextInput, TouchableOpacity, Modal, KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -12,7 +12,7 @@ import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { useMe } from '@/contexts/MeContext';
 import { searchLocation } from '@/services/geocoding/locationService';
-import { saveHumanData, setCurrentStep } from '@/services/supabase/onboardingService';
+import { saveHumanData } from '@/services/supabase/onboardingService';
 import { markSubmitted, setLastStep, getOrCreateOnboarding } from '@/services/profile/statusRepository';
 
 const GENDERS: { label: string; value: Gender }[] = [
@@ -82,7 +82,7 @@ export default function HumanScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { me } = useMe();
-  const { draft, updateHuman, updateLocation, loadFromDatabase } = useProfileDraft();
+  const { draft, updateHuman, updateLocation } = useProfileDraft();
 
   // Set current step when page loads or when user navigates back to this screen
   // Only update onboarding_status if lifecycle_status is 'onboarding' (or profile doesn't exist yet - new user)
@@ -109,76 +109,6 @@ export default function HumanScreen() {
         }
       }
     }, [user?.id, me.profile?.lifecycle_status])
-  );
-
-  // Ensure human object is properly initialized
-  // Only initialize if draft.human is completely missing, not if it exists with empty values
-  // This prevents overwriting data that was loaded from the database
-  useEffect(() => {
-    if (!draft.human || typeof draft.human !== 'object') {
-      // Only initialize if we don't have a human object at all
-      // Don't overwrite if human exists but has empty values (might be from DB)
-      updateHuman({
-        name: '',
-        dateOfBirth: '',
-        gender: null,
-      });
-    }
-  }, [draft.human, updateHuman]);
-
-  // Re-hydrate draft from Me when screen comes into focus if draft is empty
-  // This handles the case where user navigates back to this screen after resuming onboarding
-  useFocusEffect(
-    React.useCallback(() => {
-      if (user?.id && me.profile && (!draft.human?.name && !draft.human?.dateOfBirth && !draft.human?.gender)) {
-        // Draft human is empty, but me.profile has data - re-hydrate
-        const profileForDraft = {
-          user_id: me.profile.user_id,
-          display_name: me.profile.display_name || null,
-          dob: me.profile.dob || null,
-          gender: me.profile.gender || null,
-          city: me.profile.city || null,
-          latitude: me.profile.latitude || null,
-          longitude: me.profile.longitude || null,
-          lifecycle_status: me.profile.lifecycle_status,
-          validation_status: me.profile.validation_status,
-        };
-
-        const dogsForDraft = me.dogs.map((dog) => ({
-          id: dog.id,
-          slot: dog.slot,
-          name: dog.name,
-          age_group: dog.ageGroup,
-          breed: dog.breed || null,
-          size: dog.size,
-          energy: dog.energy,
-          play_styles: dog.playStyles || [],
-          temperament: dog.temperament,
-          is_active: true,
-        }));
-
-        const preferencesForDraft = me.connectionStyles.length > 0 || (me.preferences['pawsome-pals'] || me.preferences['pawfect-match'])
-          ? {
-              pals_enabled: me.connectionStyles.includes('pawsome-pals'),
-              match_enabled: me.connectionStyles.includes('pawfect-match'),
-              pals_preferred_genders: me.preferences['pawsome-pals']?.preferredGenders || [],
-              pals_age_min: me.preferences['pawsome-pals']?.ageRange.min || null,
-              pals_age_max: me.preferences['pawsome-pals']?.ageRange.max || null,
-              pals_distance_miles: me.preferences['pawsome-pals']?.distance || 25,
-              match_preferred_genders: me.preferences['pawfect-match']?.preferredGenders || [],
-              match_age_min: me.preferences['pawfect-match']?.ageRange.min || null,
-              match_age_max: me.preferences['pawfect-match']?.ageRange.max || null,
-              match_distance_miles: me.preferences['pawfect-match']?.distance || 25,
-            }
-          : null;
-
-        loadFromDatabase({
-          profile: profileForDraft,
-          dogs: dogsForDraft,
-          preferences: preferencesForDraft,
-        });
-      }
-    }, [user?.id, me, draft.human, loadFromDatabase])
   );
 
   // Bind directly to draft

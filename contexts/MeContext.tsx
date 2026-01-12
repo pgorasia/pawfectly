@@ -16,6 +16,7 @@ import {
   dbProfileToHumanProfile,
   dbPreferencesToDraftPreferences,
 } from '@/services/supabase/onboardingService';
+import { getBadgeStatuses } from '@/services/badges/badgeService';
 
 /**
  * Convert date from database format (YYYY-MM-DD) to display format (mm/dd/yyyy)
@@ -61,6 +62,13 @@ export interface MeData {
     human: number;
     dogs: Record<number, number>; // dog slot -> count
   };
+  // Badge statuses
+  badges?: Array<{
+    type: string;
+    earned: boolean;
+    earnedAt: string | null;
+    metadata: Record<string, any> | null;
+  }>;
 }
 
 interface MeContextType {
@@ -71,7 +79,14 @@ interface MeContextType {
     profile: any;
     dogs: any[];
     preferences: any;
+    badges?: Array<{
+      type: string;
+      earned: boolean;
+      earnedAt: string | null;
+      metadata: Record<string, any> | null;
+    }>;
   }) => void;
+  refreshBadges: () => Promise<void>;
   reset: () => void;
 }
 
@@ -103,6 +118,12 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     profile: any;
     dogs: any[];
     preferences: any;
+    badges?: Array<{
+      type: string;
+      earned: boolean;
+      earnedAt: string | null;
+      metadata: Record<string, any> | null;
+    }>;
   }) => {
     const newMe: MeData = { ...defaultMe };
 
@@ -150,8 +171,30 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       };
     }
 
+    // Load badges
+    if (data.badges) {
+      newMe.badges = data.badges;
+    }
+
     setMe(newMe);
     setMeLoaded(true);
+  };
+
+  const refreshBadges = async () => {
+    try {
+      const badgeStatuses = await getBadgeStatuses();
+      // Convert BadgeStatus[] to the format expected by MeData
+      const badges = badgeStatuses.map(badge => ({
+        type: badge.type,
+        earned: badge.earned,
+        earnedAt: badge.earnedAt,
+        metadata: badge.metadata,
+      }));
+      setMe((prev) => ({ ...prev, badges }));
+    } catch (error) {
+      console.error('[MeContext] Failed to refresh badges:', error);
+      // Don't throw - fail silently to avoid breaking the app
+    }
   };
 
   const reset = () => {
@@ -166,6 +209,7 @@ export const MeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
         meLoaded,
         updateMe,
         loadFromDatabase,
+        refreshBadges,
         reset,
       }}
     >
