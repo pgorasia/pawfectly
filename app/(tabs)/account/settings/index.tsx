@@ -257,26 +257,6 @@ export default function SettingsScreen() {
   return (
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => {
-            // Check if we can go back
-            if (router.canGoBack()) {
-              router.back();
-            } else {
-              // If no history, navigate to feed (index tab)
-              // Check segments to see if we should go to a specific tab
-              router.replace('/(tabs)/index');
-            }
-          }}>
-            <AppText variant="body" style={styles.backButton}>
-              ← Back
-            </AppText>
-          </TouchableOpacity>
-          <AppText variant="heading" style={styles.title}>
-            Settings
-          </AppText>
-        </View>
-
         <View style={styles.section}>
           {settingsItems.map((item) => (
             <TouchableOpacity
@@ -412,16 +392,6 @@ const styles = StyleSheet.create({
   content: {
     padding: Spacing.lg,
     paddingBottom: Spacing.xl,
-  },
-  header: {
-    marginBottom: Spacing.xl,
-  },
-  backButton: {
-    color: Colors.primary,
-    marginBottom: Spacing.md,
-  },
-  title: {
-    marginBottom: Spacing.sm,
   },
   section: {
     marginBottom: Spacing.xl,

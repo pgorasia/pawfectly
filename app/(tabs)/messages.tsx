@@ -540,46 +540,28 @@ export default function MessagesScreen() {
   );
 
   /**
-   * Matches section (horizontal carousel + liked you card)
-   * Always show "X people want to connect" card if liked_you_count > 0
+   * Matches section (horizontal carousel)
    */
   const renderMatchesSection = () => {
-    const hasMatches = filteredMatches.length > 0;
-    const hasLikedYou = messagesHome && messagesHome.liked_you_count > 0;
-
-    // Don't render section if nothing to show
-    if (!hasMatches && !hasLikedYou) {
+    if (filteredMatches.length === 0) {
       return null;
     }
 
     return (
       <View style={styles.section}>
-        {/* Always show liked you card if count > 0 */}
-        {hasLikedYou && (
-          <LikedYouPlaceholder
-            count={messagesHome.liked_you_count}
-            onPress={handleLikedYouPress}
-          />
-        )}
-
-        {/* Show matches carousel if there are matches */}
-        {hasMatches && (
-          <>
-            <AppText variant="body" style={styles.sectionTitle}>
-              Matches
-            </AppText>
-            <FlatList
-              horizontal
-              data={filteredMatches}
-              keyExtractor={(item) => item.user_id}
-              renderItem={({ item }) => (
-                <MatchTile match={item} onPress={() => handleMatchPress(item)} />
-              )}
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.matchesContent}
-            />
-          </>
-        )}
+        <AppText variant="body" style={styles.sectionTitle}>
+          Matches
+        </AppText>
+        <FlatList
+          horizontal
+          data={filteredMatches}
+          keyExtractor={(item) => item.user_id}
+          renderItem={({ item }) => (
+            <MatchTile match={item} onPress={() => handleMatchPress(item)} />
+          )}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.matchesContent}
+        />
       </View>
     );
   };
@@ -802,6 +784,14 @@ export default function MessagesScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
           showsVerticalScrollIndicator={false}
         >
+          {/* Liked You Tile - Full width, above Matches */}
+          {messagesHome && messagesHome.liked_you_count > 0 && (
+            <LikedYouPlaceholder
+              count={messagesHome.liked_you_count}
+              onPress={handleLikedYouPress}
+            />
+          )}
+
           {/* Matches Section */}
           {renderMatchesSection()}
 

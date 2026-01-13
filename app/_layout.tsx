@@ -1,6 +1,10 @@
 import { Stack, useRouter } from "expo-router";
 import { useEffect } from "react";
+import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
+import * as NavigationBar from "expo-navigation-bar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AuthSessionStoreProvider } from "@/contexts/AuthSessionStore";
 import { MeProvider } from "@/contexts/MeContext";
@@ -15,20 +19,17 @@ function NotificationHandler() {
   const router = useRouter();
 
   useEffect(() => {
-    // Set up notification handler
     const subscription = setupNotificationHandler((data) => {
-      if (data.type === 'photo_rejected' && data.screen) {
-        // Navigate to photos page when notification is tapped
+      if (data.type === "photo_rejected" && data.screen) {
         router.push(data.screen as any);
       }
     });
 
-    // Also handle notifications received while app is in foreground
-    const foregroundSubscription = Notifications.addNotificationReceivedListener((notification) => {
-      // Notification received while app is in foreground
-      // The notification will still be shown, but we can handle it here if needed
-      console.log('[RootLayout] Notification received:', notification);
-    });
+    const foregroundSubscription = Notifications.addNotificationReceivedListener(
+      (notification) => {
+        console.log("[RootLayout] Notification received:", notification);
+      }
+    );
 
     return () => {
       subscription.remove();
@@ -40,21 +41,36 @@ function NotificationHandler() {
 }
 
 export default function RootLayout() {
+  useEffect(() => {
+    // Android navigation bar: render as an overlay so we can control the in-app "letterbox"
+    // spacing using Safe Area insets. This is the most consistent way to ensure action bars
+    // (chat input, accept/reject, bottom tabs) never collide with system navigation.
+    if (Platform.OS === "android") {
+      NavigationBar.setPositionAsync("absolute").catch(() => undefined);
+      NavigationBar.setBackgroundColorAsync("#000000").catch(() => undefined);
+      NavigationBar.setBorderColorAsync("#000000").catch(() => undefined);
+      NavigationBar.setButtonStyleAsync("light").catch(() => undefined);
+    }
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AuthSessionStoreProvider>
-        <AuthProvider>
-          <AuthSessionSync />
-          <MeProvider>
-          <ProfileDraftProvider>
-              <MeBootstrapper />
-              <DraftBootstrapper />
-            <NotificationHandler />
-            <Stack screenOptions={{ headerShown: false }} />
-          </ProfileDraftProvider>
-          </MeProvider>
-        </AuthProvider>
-      </AuthSessionStoreProvider>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        <AuthSessionStoreProvider>
+          <AuthProvider>
+            <AuthSessionSync />
+            <MeProvider>
+              <ProfileDraftProvider>
+                <MeBootstrapper />
+                <DraftBootstrapper />
+                <NotificationHandler />
+                <Stack screenOptions={{ headerShown: false }} />
+              </ProfileDraftProvider>
+            </MeProvider>
+          </AuthProvider>
+        </AuthSessionStoreProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

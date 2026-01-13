@@ -62,24 +62,6 @@ export default function BlockedUsersScreen() {
   return (
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => {
-            if (router.canGoBack()) {
-              router.back();
-            } else {
-              // Navigate to settings if no history
-              router.replace('/(tabs)/account/settings');
-            }
-          }}>
-            <AppText variant="body" style={styles.backButton}>
-              ← Back
-            </AppText>
-          </TouchableOpacity>
-          <AppText variant="heading" style={styles.title}>
-            Blocked Users
-          </AppText>
-        </View>
-
         {loading ? (
           <AppText variant="body" style={styles.emptyText}>
             Loading...
@@ -147,16 +129,6 @@ const styles = StyleSheet.create({
   content: {
     padding: Spacing.lg,
     paddingBottom: Spacing.xl,
-  },
-  header: {
-    marginBottom: Spacing.xl,
-  },
-  backButton: {
-    color: Colors.primary,
-    marginBottom: Spacing.md,
-  },
-  title: {
-    marginBottom: Spacing.sm,
   },
   emptyContainer: {
     alignItems: 'center',

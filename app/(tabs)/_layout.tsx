@@ -1,5 +1,6 @@
 import { Tabs, useFocusEffect } from 'expo-router';
 import React, { useRef } from 'react';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -10,6 +11,7 @@ import { getPromptQuestions } from '@/services/prompts/promptService';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const promptsPreloadedRef = useRef(false);
 
@@ -39,6 +41,14 @@ export default function TabLayout() {
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: false,
+        tabBarHideOnKeyboard: true,
+        tabBarStyle: {
+          backgroundColor: Colors[colorScheme ?? 'light'].background,
+          borderTopColor: 'rgba(0,0,0,0.08)',
+          borderTopWidth: 1,
+          paddingBottom: Math.max(insets.bottom, 8),
+          height: 56 + Math.max(insets.bottom, 8),
+        },
         tabBarButton: HapticTab,
       }}>
       <Tabs.Screen
@@ -74,6 +84,12 @@ export default function TabLayout() {
         options={{
           title: 'Account',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="person.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="preferences"
+        options={{
+          href: null, // Hide from tab bar
         }}
       />
     </Tabs>

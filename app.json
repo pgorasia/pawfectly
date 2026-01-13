@@ -26,7 +26,8 @@
       "package": "com.pratikgorasia.pawfectly",
       "permissions": [
         "CAMERA"
-      ]
+      ],
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "output": "static",

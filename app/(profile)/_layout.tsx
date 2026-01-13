@@ -7,6 +7,8 @@ import { useProfileDraft } from '@/hooks/useProfileDraft';
 import { AppText } from '@/components/ui/AppText';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
+import { BackTo } from '@/components/navigation/BackTo';
+import { useLocalSearchParams } from 'expo-router';
 
 function ProfileDataGate({ children }: { children: React.ReactNode }) {
   const { meLoaded } = useMe();
@@ -28,11 +30,35 @@ function ProfileDataGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function PreferencesHeaderLeft() {
+  const params = useLocalSearchParams<{ from?: string }>();
+  
+  const getBackHref = () => {
+    if (params.from === 'feed') {
+      return '/(tabs)';
+    } else if (params.from === 'account') {
+      return '/(tabs)/account';
+    }
+    return '/(tabs)/account'; // Default fallback
+  };
+  
+  return <BackTo href={getBackHref()} />;
+}
+
 export default function ProfileLayout() {
   return (
     <ProtectedRoute>
       <ProfileDataGate>
-        <Stack screenOptions={{ headerShown: false }} />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen
+            name="preferences"
+            options={{
+              headerShown: true,
+              title: 'Preferences',
+              headerLeft: () => <PreferencesHeaderLeft />,
+            }}
+          />
+        </Stack>
       </ProfileDataGate>
     </ProtectedRoute>
   );

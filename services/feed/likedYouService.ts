@@ -30,6 +30,7 @@ export type LikedYouCard = {
   hero_photo_storage_path: string | null;
   hero_photo_bucket_type: string | null;
   hero_photo_id: string | null;
+  lane: 'pals' | 'match';
 };
 
 /**
@@ -63,6 +64,11 @@ export async function getLikedYouPage(
   }
 
   const rows = (data ?? []) as LikedYouCard[];
+  
+  // Debug: Log first row to see actual data structure
+  if (rows.length > 0) {
+    console.log('[likedYouService] Sample row data:', JSON.stringify(rows[0], null, 2));
+  }
   
   if (rows.length === 0) {
     return { rows: [], nextCursor: null };

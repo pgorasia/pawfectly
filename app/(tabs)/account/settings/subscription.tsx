@@ -103,24 +103,6 @@ export default function SubscriptionScreen() {
   return (
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => {
-            if (router.canGoBack()) {
-              router.back();
-            } else {
-              // Navigate to settings if no history
-              router.replace('/(tabs)/account/settings');
-            }
-          }}>
-            <AppText variant="body" style={styles.backButton}>
-              ← Back
-            </AppText>
-          </TouchableOpacity>
-          <AppText variant="heading" style={styles.title}>
-            Subscription
-          </AppText>
-        </View>
-
         {currentPlan && (
           <View style={styles.currentPlanSection}>
             <AppText variant="body" style={styles.currentPlanLabel}>
@@ -204,16 +186,6 @@ const styles = StyleSheet.create({
   content: {
     padding: Spacing.lg,
     paddingBottom: Spacing.xl,
-  },
-  header: {
-    marginBottom: Spacing.xl,
-  },
-  backButton: {
-    color: Colors.primary,
-    marginBottom: Spacing.md,
-  },
-  title: {
-    marginBottom: Spacing.sm,
   },
   currentPlanSection: {
     backgroundColor: 'rgba(217, 119, 6, 0.1)',

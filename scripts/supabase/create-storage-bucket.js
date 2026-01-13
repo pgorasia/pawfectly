@@ -1,7 +1,7 @@
 /**
- * Script to create the photos storage bucket in Supabase
+ * Script to create required storage buckets in Supabase
  * Run with: node scripts/supabase/create-storage-bucket.js
- * 
+ *
  * Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables
  */
 
@@ -18,50 +18,50 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-async function createPhotosBucket() {
-  console.log('Creating photos storage bucket...');
+async function ensureBucket(name, options) {
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  if (listError) throw listError;
+
+  const existing = buckets?.find((b) => b.name === name);
+  if (existing) {
+    console.log(`✅ Bucket already exists: ${name}`);
+    return;
+  }
+
+  const { error } = await supabase.storage.createBucket(name, options);
+  if (error) throw error;
+
+  console.log(`✅ Bucket created: ${name}`);
+}
+
+async function createBuckets() {
+  console.log('Creating required storage buckets...');
 
   try {
-    // Check if bucket already exists
-    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
-    
-    if (listError) {
-      throw listError;
-    }
-
-    const photosBucket = buckets?.find(b => b.name === 'photos');
-    
-    if (photosBucket) {
-      console.log('✅ Photos bucket already exists');
-      return;
-    }
-
-    // Create the bucket
-    const { data, error } = await supabase.storage.createBucket('photos', {
-      public: true, // Make bucket public for easy access
+    // Public profile photo bucket (existing app behavior)
+    await ensureBucket('photos', {
+      public: true,
       fileSizeLimit: 10485760, // 10MB
       allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
     });
 
-    if (error) {
-      throw error;
-    }
+    // Private selfie verification bucket (Phase 1: manual review)
+    await ensureBucket('selfie_verifications', {
+      public: false,
+      fileSizeLimit: 10485760, // 10MB
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+    });
 
-    console.log('✅ Photos bucket created successfully');
     console.log('📝 Next steps:');
-    console.log('   1. Go to Supabase Dashboard → Storage → photos');
-    console.log('   2. Set up RLS policies for security');
-    console.log('   3. See scripts/supabase/create-storage-bucket.sql for policy examples');
+    console.log('   1. Go to Supabase Dashboard → Storage');
+    console.log('   2. Ensure RLS policies exist for storage.objects (see latest migrations for selfie policies)');
   } catch (error) {
-    console.error('❌ Failed to create bucket:', error.message);
-    console.error('\n💡 Alternative: Create the bucket manually in Supabase Dashboard:');
-    console.error('   1. Go to Storage → Create Bucket');
-    console.error('   2. Name: photos');
-    console.error('   3. Public: true');
-    console.error('   4. Set up RLS policies');
+    console.error('❌ Failed to create buckets:', error.message);
+    console.error('\n💡 Alternative: Create buckets manually in Supabase Dashboard:');
+    console.error('   - photos (public: true)');
+    console.error('   - selfie_verifications (public: false)');
     process.exit(1);
   }
 }
 
-createPhotosBucket();
-
+createBuckets();

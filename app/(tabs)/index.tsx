@@ -84,7 +84,7 @@ export default function FeedScreen() {
   const { me } = useMe();
   const scrollViewRef = useRef<ScrollView>(null);
   
-  console.log('[FeedScreen] 🔄 Component render, preferencesRaw:', me.preferencesRaw);
+  console.log('[FeedScreen] 🔄 Component render (Feed screen mounted)');
   
   // Determine visible lanes and default lane from preferences
   const { visibleTabs, defaultLane } = useMemo(() => {
@@ -117,7 +117,8 @@ export default function FeedScreen() {
   // Active lane state (user can switch between visible tabs)
   const [lane, setLane] = useState<Lane>(defaultLane);
   
-  // Per-lane feed state - separate queues and cursors for each lane
+  // Per-lane feed state - separate queues, cursors, and indexes for each lane
+  // CRITICAL: Index tracking preserves position per lane (no reset on lane switch)
   const [queueByLane, setQueueByLane] = useState<Record<Lane, ProfileViewPayload[]>>({
     pals: [],
     match: [],
@@ -130,9 +131,18 @@ export default function FeedScreen() {
     pals: false,
     match: false,
   });
+  // Index tracking per lane - preserves position when switching lanes
+  const [indexByLane, setIndexByLane] = useState<Record<Lane, number>>({
+    pals: 0,
+    match: 0,
+  });
   
-  // Current profile for active lane
-  const [currentProfile, setCurrentProfile] = useState<ProfileViewPayload | null>(null);
+  // Current profile for active lane (derived from queue[index])
+  const currentProfile = useMemo(() => {
+    const queue = queueByLane[lane];
+    const index = indexByLane[lane];
+    return queue[index] || null;
+  }, [queueByLane, indexByLane, lane]);
   
   // UI state
   const [loading, setLoading] = useState(true);
@@ -294,6 +304,8 @@ export default function FeedScreen() {
     async (targetLane: Lane, cursor: FeedCursor | null = null, append: boolean = false) => {
       if (!user?.id) return;
 
+      console.log('[FeedScreen] loadFeedPage start:', { targetLane, cursor, append });
+
       try {
         const result = await getFeedPage(10, cursor, targetLane);
 
@@ -303,11 +315,14 @@ export default function FeedScreen() {
             ...prev,
             [targetLane]: [...prev[targetLane], ...result.profiles],
           }));
+          // Don't reset index when appending
         } else {
           setQueueByLane((prev) => ({
             ...prev,
             [targetLane]: result.profiles,
           }));
+          // Reset index to 0 when not appending (new fetch)
+          setIndexByLane((prev) => ({ ...prev, [targetLane]: 0 }));
         }
 
         setCursorByLane((prev) => ({
@@ -320,8 +335,10 @@ export default function FeedScreen() {
           ...prev,
           [targetLane]: result.profiles.length === 0,
         }));
+        
+        console.log('[FeedScreen] loadFeedPage success:', { targetLane, profilesCount: result.profiles.length });
       } catch (error) {
-        console.error('[FeedScreen] Failed to load feed page:', error);
+        console.error('[FeedScreen] loadFeedPage error:', error);
       } finally {
         setRefilling(false);
       }
@@ -329,16 +346,22 @@ export default function FeedScreen() {
     [user?.id]
   );
 
-  // Initialize: load queue and first profile for current lane
+  // Initialize: load queue for active lane (only if empty)
+  // CRITICAL: Do NOT refetch on lane change - preserve index per lane
   useEffect(() => {
     const initialize = async () => {
-      setLoading(true);
-      await loadFeedPage(lane, null, false);
-      setLoading(false);
-      lastRefreshTime.current = Date.now();
+      const queue = queueByLane[lane];
+      // Only load if queue is empty (initial mount or after reset)
+      if (queue.length === 0 && !exhaustedByLane[lane]) {
+        console.log('[FeedScreen] Mount: initializing lane:', lane);
+        setLoading(true);
+        await loadFeedPage(lane, null, false);
+        setLoading(false);
+        lastRefreshTime.current = Date.now();
+      }
     };
     initialize();
-  }, [lane, loadFeedPage]);
+  }, []); // Only run on mount - do NOT depend on lane
 
   // Refresh feed when screen comes into focus (e.g., after resetting dislikes)
   // Check if specific lanes need refresh (after reset) and clear only those lanes
@@ -361,11 +384,9 @@ export default function FeedScreen() {
           for (const resetLane of lanesToRefresh) {
             setCursorByLane((prev) => ({ ...prev, [resetLane]: null }));
             setQueueByLane((prev) => ({ ...prev, [resetLane]: [] }));
+            setIndexByLane((prev) => ({ ...prev, [resetLane]: 0 }));
             setExhaustedByLane((prev) => ({ ...prev, [resetLane]: false }));
           }
-          
-          // Clear current profile if it's from a reset lane
-          setCurrentProfile(null);
           
           // Clear pending undo (profiles may have been reset)
           setPendingUndoNew(null);
@@ -395,15 +416,8 @@ export default function FeedScreen() {
     }, [user?.id, loading, lane, loadFeedPage, refreshFeed, me.preferencesRaw])
   );
 
-  // Initialize current profile when queue is first loaded for active lane
-  // After initialization, currentProfile is managed explicitly by advanceToNext and handleUndo
-  useEffect(() => {
-    const currentQueue = queueByLane[lane];
-    // Only initialize currentProfile if it's null and queue has items
-    if (!currentProfile && currentQueue.length > 0) {
-      setCurrentProfile(currentQueue[0]);
-    }
-  }, [queueByLane, lane, currentProfile]);
+  // Current profile is now derived from queue[index] - no separate state needed
+  // Position is preserved per lane via indexByLane
 
   // Cleanup pendingUndo timer on unmount or when pendingUndo changes
   useEffect(() => {
@@ -684,23 +698,23 @@ export default function FeedScreen() {
     }
   };
 
-  // Refresh feed: clear current lane's cursor and queue, refetch
+  // Refresh feed: clear current lane's cursor, queue, and index, refetch
   const refreshFeed = useCallback(async () => {
     setCursorByLane((prev) => ({ ...prev, [lane]: null }));
     setQueueByLane((prev) => ({ ...prev, [lane]: [] }));
-    setCurrentProfile(null);
+    setIndexByLane((prev) => ({ ...prev, [lane]: 0 }));
     setExhaustedByLane((prev) => ({ ...prev, [lane]: false }));
     await loadFeedPage(lane, null, false);
   }, [lane, loadFeedPage]);
 
-  // Refresh both lanes: clear all queues/cursors, refetch active lane
+  // Refresh both lanes: clear all queues/cursors/indexes, refetch active lane
   const refreshBothLanes = useCallback(async () => {
     console.log('[FeedScreen] Refreshing both lanes due to preference change');
     
-    // Clear both lanes
+    // Clear both lanes (queues, cursors, indexes)
     setCursorByLane({ pals: null, match: null });
     setQueueByLane({ pals: [], match: [] });
-    setCurrentProfile(null);
+    setIndexByLane({ pals: 0, match: 0 });
     setExhaustedByLane({ pals: false, match: false });
     
     // Clear pending undo (preferences changed, old undo is stale)
@@ -725,23 +739,29 @@ export default function FeedScreen() {
     setRefreshing(true);
     setCursorByLane((prev) => ({ ...prev, [lane]: null }));
     setQueueByLane((prev) => ({ ...prev, [lane]: [] }));
-    setCurrentProfile(null);
+    setIndexByLane((prev) => ({ ...prev, [lane]: 0 }));
     setExhaustedByLane((prev) => ({ ...prev, [lane]: false }));
     await loadFeedPage(lane, null, false);
     setRefreshing(false);
   }, [lane, loadFeedPage]);
   
   // Handle lane switch (match/pals)
+  // CRITICAL: Does NOT remount feed screen - only swaps state
+  // Preserves index per lane (position is maintained)
   const handleLaneSwitch = useCallback(async (newLane: Lane) => {
     if (newLane === lane) return; // Already on this lane
     
+    console.log('[FeedScreen] Lane switch:', lane, '->', newLane);
     setLane(newLane);
-    setCurrentProfile(null);
     
     // Clear pending undo when switching lanes
     setPendingUndoNew(null);
     
-    // If new lane's queue is empty, load it
+    // Reset scroll state
+    setHasScrolledPastHero(false);
+    scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+    
+    // If new lane's queue is empty, load it (but preserve index)
     if (queueByLane[newLane].length === 0 && !exhaustedByLane[newLane]) {
       setLoading(true);
       try {
@@ -751,37 +771,46 @@ export default function FeedScreen() {
       } finally {
         setLoading(false);
       }
+    } else {
+      // Prefetch if queue is getting low (background)
+      const queue = queueByLane[newLane];
+      const index = indexByLane[newLane];
+      const remaining = queue.length - index;
+      const cursor = cursorByLane[newLane];
+      if (remaining <= 3 && cursor) {
+        loadFeedPage(newLane, cursor, true).catch((error) => {
+          console.error('[FeedScreen] Failed to prefetch on lane switch:', error);
+        });
+      }
     }
-  }, [lane, queueByLane, exhaustedByLane, loadFeedPage]);
+  }, [lane, queueByLane, exhaustedByLane, indexByLane, cursorByLane, loadFeedPage]);
 
-  // Advance to next profile in current lane
+  // Advance to next profile in current lane (increment index)
+  // CRITICAL: Uses index tracking instead of queue slicing to preserve position
   const advanceToNext = useCallback(() => {
-    setQueueByLane((prev) => {
-      const currentQueue = prev[lane];
-      const newQueue = currentQueue.slice(1);
-      
-      // Explicitly set the next profile as current
-      if (newQueue.length > 0) {
-        setCurrentProfile(newQueue[0]);
-      } else {
-        setCurrentProfile(null);
-      }
-      
-      // Load more if queue is getting low (target: keep ~20 in queue)
-      const currentCursor = cursorByLane[lane];
-      if (newQueue.length < 10 && currentCursor) {
-        loadFeedPage(lane, currentCursor, true); // Append to queue
-      }
-      
-      return { ...prev, [lane]: newQueue };
+    setIndexByLane((prev) => {
+      const newIndex = prev[lane] + 1;
+      console.log('[FeedScreen] advanceToNext:', lane, prev[lane], '->', newIndex);
+      return { ...prev, [lane]: newIndex };
     });
+    
+    // Prefetch if queue is getting low (background)
+    const queue = queueByLane[lane];
+    const index = indexByLane[lane];
+    const remaining = queue.length - (index + 1);
+    const cursor = cursorByLane[lane];
+    if (remaining <= 3 && cursor) {
+      loadFeedPage(lane, cursor, true).catch((error) => {
+        console.error('[FeedScreen] Failed to prefetch after advance:', error);
+      });
+    }
     
     // Reset scroll state
     setHasScrolledPastHero(false);
     
     // Scroll to top
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-  }, [lane, cursorByLane, loadFeedPage]);
+  }, [lane, queueByLane, indexByLane, cursorByLane, loadFeedPage]);
 
   // Handle swipe actions
   const handleSwipe = useCallback(async (action: 'reject' | 'pass' | 'accept') => {
@@ -1007,32 +1036,36 @@ export default function FeedScreen() {
     const snapshot = pendingUndoNew.snapshot;
     const undoLane = pendingUndoNew.lane;
 
-    // Put the undone profile back as current, and move the current profile to front of queue for that lane
+    // Put the undone profile back at index 0, and move the current profile to front of queue for that lane
+    const currentQueue = queueByLane[undoLane];
+    const currentIndex = indexByLane[undoLane];
+    const currentProfileAtIndex = currentQueue[currentIndex] || null;
+    
     setQueueByLane((prev) => {
-      const currentQueue = prev[undoLane];
+      const queue = prev[undoLane];
       
       // If there's a current profile, put it at the front of the queue
-      if (currentProfile) {
-        const currentId = currentProfile.candidate.user_id;
+      if (currentProfileAtIndex) {
+        const currentId = currentProfileAtIndex.candidate.user_id;
         // Remove both currentId and undoneId from queue to avoid duplicates
-        const rest = currentQueue.filter((p) => 
+        const rest = queue.filter((p) => 
           p.candidate.user_id !== currentId && 
           p.candidate.user_id !== undoneId
         );
         // Put current profile at the front (it will be next after the undone profile)
-        const finalQueue = [currentProfile, ...rest];
+        const finalQueue = [currentProfileAtIndex, ...rest];
         queueStateRef.current.queueLength = finalQueue.length;
         return { ...prev, [undoLane]: finalQueue };
       }
       
       // No current profile, just remove undone from queue
-      const rest = currentQueue.filter((p) => p.candidate.user_id !== undoneId);
+      const rest = queue.filter((p) => p.candidate.user_id !== undoneId);
       queueStateRef.current.queueLength = rest.length;
       return { ...prev, [undoLane]: rest };
     });
 
-    // Set currentProfile to the undone profile (the one we want to see)
-    setCurrentProfile(snapshot);
+    // Set index to 0 to show the undone profile
+    setIndexByLane((prev) => ({ ...prev, [undoLane]: 0 }));
 
     // Clear pendingUndo
     setPendingUndoNew(null);
@@ -1044,7 +1077,7 @@ export default function FeedScreen() {
     // Reset scroll state
     setHasScrolledPastHero(false);
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-  }, [pendingUndoNew, currentProfile]);
+  }, [pendingUndoNew, queueByLane, indexByLane]);
 
   if (loading) {
     return (
@@ -1071,15 +1104,9 @@ export default function FeedScreen() {
           <View style={styles.headerTopRow}>
             <TouchableOpacity
               style={styles.headerButton}
-              onPress={() => router.push('/(profile)/preferences')}
+              onPress={() => router.push('/(profile)/preferences?from=feed')}
             >
               <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.headerButton}
-              onPress={() => router.push('/(tabs)/account/settings')}
-            >
-              <IconSymbol name="gearshape.fill" size={24} color={Colors.text} />
             </TouchableOpacity>
           </View>
           {hasProfile && (
@@ -1104,39 +1131,41 @@ export default function FeedScreen() {
         </View>
       </View>
 
-      {/* Lane Tab Bar - only show if both lanes are enabled */}
+      {/* Lane Segmented Control - only show if both lanes are enabled */}
       {(() => {
         const shouldShowTabs = visibleTabs.length === 2;
-        console.log('[FeedScreen] 🎨 Rendering tabs:', {
+        console.log('[FeedScreen] 🎨 Rendering segmented control:', {
           visibleTabsLength: visibleTabs.length,
           visibleTabs,
           shouldShowTabs,
-          willRenderTabBar: shouldShowTabs,
+          willRenderSegmentedControl: shouldShowTabs,
         });
         return shouldShowTabs ? (
-          <View style={styles.tabBar}>
+          <View style={styles.segmentedControl}>
             <TouchableOpacity
-              style={[styles.tab, lane === 'match' && styles.tabActive]}
-              onPress={() => handleLaneSwitch('match')}
+              style={[styles.segment, lane === 'pals' && styles.segmentActive]}
+              onPress={() => handleLaneSwitch('pals')}
               disabled={loading}
+              activeOpacity={0.7}
             >
               <AppText
                 variant="body"
-                style={[styles.tabText, lane === 'match' && styles.tabTextActive]}
+                style={[styles.segmentText, lane === 'pals' && styles.segmentTextActive]}
               >
-                💛 Pawfect Match
+                Pawsome Pals
               </AppText>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.tab, lane === 'pals' && styles.tabActive]}
-              onPress={() => handleLaneSwitch('pals')}
+              style={[styles.segment, lane === 'match' && styles.segmentActive]}
+              onPress={() => handleLaneSwitch('match')}
               disabled={loading}
+              activeOpacity={0.7}
             >
               <AppText
                 variant="body"
-                style={[styles.tabText, lane === 'pals' && styles.tabTextActive]}
+                style={[styles.segmentText, lane === 'match' && styles.segmentTextActive]}
               >
-                🐾 Pawsome Pals
+                Pawfect Match
               </AppText>
             </TouchableOpacity>
           </View>
@@ -1186,7 +1215,7 @@ export default function FeedScreen() {
               hasScrolledPastHero={hasScrolledPastHero}
             />
           </ScrollView>
-        ) : exhaustedByLane[lane] && queueByLane[lane].length === 0 && !currentProfile ? (
+        ) : exhaustedByLane[lane] && queueByLane[lane].length === 0 ? (
           // Empty state for both lanes
           <View style={styles.emptyContainer}>
             <AppText variant="heading" style={styles.emptyTitle}>
@@ -1384,31 +1413,34 @@ const styles = StyleSheet.create({
   headerButton: {
     padding: Spacing.sm,
   },
-  tabBar: {
+  segmentedControl: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+    backgroundColor: Colors.background + '80', // Subtle background
+    borderRadius: 12,
+    padding: 4,
     marginHorizontal: Spacing.lg,
     marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
   },
-  tab: {
+  segment: {
     flex: 1,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
     alignItems: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    justifyContent: 'center',
+    borderRadius: 8,
   },
-  tabActive: {
-    borderBottomColor: Colors.primary,
+  segmentActive: {
+    backgroundColor: Colors.primary,
   },
-  tabText: {
-    fontSize: 16,
-    opacity: 0.5,
+  segmentText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: Colors.text + '80', // Semi-transparent when inactive
   },
-  tabTextActive: {
-    opacity: 1,
+  segmentTextActive: {
+    color: Colors.background,
     fontWeight: '600',
-    color: Colors.primary,
   },
   loadingContainer: {
     flex: 1,
@@ -1450,6 +1482,21 @@ const styles = StyleSheet.create({
   },
   emptyActionButton: {
     width: '100%',
+  },
+  laneBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    backgroundColor: Colors.primary + '15', // 15% opacity
+    borderRadius: 12,
+    marginRight: Spacing.sm,
+  },
+  laneBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.primary,
   },
   actionBar: {
     flexDirection: 'row',

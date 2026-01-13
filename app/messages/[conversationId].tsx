@@ -22,10 +22,11 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
-  Keyboard,
   Image,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useHeaderHeight } from '@react-navigation/elements';
 import { publicPhotoUrl } from '@/utils/photoUrls';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppText } from '@/components/ui/AppText';
@@ -156,6 +157,8 @@ function MessageBubble({ message, onRetry }: { message: ChatMessage; onRetry?: (
 
 export default function ChatThreadScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const headerHeight = useHeaderHeight();
   const { user } = useAuth();
   const {
     conversationId,
@@ -288,17 +291,15 @@ export default function ChatThreadScreen() {
   useFocusEffect(
     useCallback(() => {
       if (activeTab === 'chat') {
-        // Small delay to ensure the input is mounted
+        // Small delay to ensure the input is mounted.
+        // Avoid dismissing the keyboard on Android; it can prevent the keyboard from
+        // re-opening reliably when combined with KeyboardAvoidingView.
         const timer = setTimeout(() => {
           inputRef.current?.focus();
-          // Force keyboard to show on Android
           if (Platform.OS === 'android') {
-            Keyboard.dismiss();
-            setTimeout(() => {
-              inputRef.current?.focus();
-            }, 50);
+            setTimeout(() => inputRef.current?.focus(), 75);
           }
-        }, 300);
+        }, 250);
         return () => clearTimeout(timer);
       }
     }, [activeTab])
@@ -752,8 +753,14 @@ export default function ChatThreadScreen() {
     );
   };
 
+  const systemBarSpacerHeight = Math.max(insets.bottom, 0);
+  const systemBarSpacerColor = Platform.OS === 'android' ? '#000000' : Colors.background;
+
   return (
-    <>
+    // Use only TOP safe-area here.
+    // Bottom is handled explicitly so action bars can sit flush above a consistent
+    // "letterbox" spacer (black on Android, background on iOS).
+    <SafeAreaView style={styles.container} edges={['top']}>
       <Stack.Screen
         options={{
           headerShown: true,
@@ -863,9 +870,9 @@ export default function ChatThreadScreen() {
       {/* Tab Content */}
       {activeTab === 'chat' ? (
         <KeyboardAvoidingView
-          style={styles.container}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 100}
+          style={styles.keyboardAvoiding}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
         >
           <View style={styles.contentContainer}>
             {/* Pending Request Banner */}
@@ -930,7 +937,8 @@ export default function ChatThreadScreen() {
 
             {/* Input Bar or Request Actions */}
             {isIncomingRequest && !requestAccepted ? (
-              <View style={styles.requestActionsContainer}>
+              <View style={styles.footerContainer}>
+                <View style={styles.requestActionsContainer}>
                 <TouchableOpacity
                   style={[styles.requestButton, styles.rejectButton, processingRequest && styles.buttonDisabled]}
                   onPress={handleRejectRequest}
@@ -955,38 +963,45 @@ export default function ChatThreadScreen() {
                     </AppText>
                   )}
                 </TouchableOpacity>
+                </View>
+                {/* System navigation spacer ("letterbox") */}
+                <View style={[styles.systemBarSpacer, { height: systemBarSpacerHeight, backgroundColor: systemBarSpacerColor }]} />
               </View>
             ) : (
-              <View style={styles.inputContainer}>
-                <TextInput
-                  ref={inputRef}
-                  style={styles.input}
-                  placeholder="Type a message..."
-                  placeholderTextColor="rgba(31, 41, 55, 0.4)"
-                  value={inputText}
-                  onChangeText={setInputText}
-                  multiline
-                  maxLength={1000}
-                  returnKeyType="default"
-                  blurOnSubmit={false}
-                  editable={!isInputDisabled}
-                  onFocus={() => {
-                    // Scroll to bottom when input is focused
-                    setTimeout(() => {
-                      flatListRef.current?.scrollToEnd({ animated: true });
-                    }, 100);
-                  }}
-                />
-                <TouchableOpacity
-                  style={[styles.sendButton, (inputText.trim().length === 0 || isInputDisabled) && styles.sendButtonDisabled]}
-                  onPress={handleSend}
-                  disabled={inputText.trim().length === 0 || isInputDisabled}
-                  activeOpacity={0.7}
-                >
-                  <AppText variant="body" style={styles.sendButtonText}>
-                    Send
-                  </AppText>
-                </TouchableOpacity>
+              <View style={styles.footerContainer}>
+                <View style={styles.inputContainer}>
+                  <TextInput
+                    ref={inputRef}
+                    style={styles.input}
+                    placeholder="Type a message..."
+                    placeholderTextColor="rgba(31, 41, 55, 0.4)"
+                    value={inputText}
+                    onChangeText={setInputText}
+                    multiline
+                    maxLength={1000}
+                    returnKeyType="default"
+                    blurOnSubmit={false}
+                    editable={!isInputDisabled}
+                    onFocus={() => {
+                      // Scroll to bottom when input is focused
+                      setTimeout(() => {
+                        flatListRef.current?.scrollToEnd({ animated: true });
+                      }, 100);
+                    }}
+                  />
+                  <TouchableOpacity
+                    style={[styles.sendButton, (inputText.trim().length === 0 || isInputDisabled) && styles.sendButtonDisabled]}
+                    onPress={handleSend}
+                    disabled={inputText.trim().length === 0 || isInputDisabled}
+                    activeOpacity={0.7}
+                  >
+                    <AppText variant="body" style={styles.sendButtonText}>
+                      Send
+                    </AppText>
+                  </TouchableOpacity>
+                </View>
+                {/* System navigation spacer ("letterbox") */}
+                <View style={[styles.systemBarSpacer, { height: systemBarSpacerHeight, backgroundColor: systemBarSpacerColor }]} />
               </View>
             )}
           </View>
@@ -1008,7 +1023,7 @@ export default function ChatThreadScreen() {
           )}
         </ScrollView>
       )}
-    </>
+    </SafeAreaView>
   );
 }
 
@@ -1017,8 +1032,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
+  keyboardAvoiding: {
+    flex: 1,
+  },
   contentContainer: {
     flex: 1,
+  },
+  footerContainer: {
+    width: '100%',
+  },
+  systemBarSpacer: {
+    width: '100%',
   },
   profileContainer: {
     flex: 1,
@@ -1208,8 +1232,8 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     flexDirection: 'row',
-    padding: Spacing.md,
-    paddingBottom: Platform.OS === 'ios' ? Spacing.md : Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     borderTopWidth: 1,
     borderTopColor: 'rgba(31, 41, 55, 0.1)',
     backgroundColor: Colors.background,
@@ -1251,7 +1275,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
-    paddingBottom: Spacing.lg,
     gap: Spacing.md,
     borderTopWidth: 1,
     borderTopColor: 'rgba(31, 41, 55, 0.1)',

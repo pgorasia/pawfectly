@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
+import { LaneBadge } from '@/components/messages/LaneBadge';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { 
@@ -14,6 +15,9 @@ import {
 } from '@/services/feed/likedYouService';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicPhotoUrl } from '@/utils/photoUrls';
+import type { Lane } from '@/services/messages/messagesService';
+
+type LaneFilter = 'all' | 'pals' | 'match';
 
 export default function LikedYouScreen() {
   const router = useRouter();
@@ -25,6 +29,7 @@ export default function LikedYouScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [isPremium, setIsPremium] = useState(false); // TODO: Get from user subscription status
+  const [laneFilter, setLaneFilter] = useState<LaneFilter>('all');
 
   // Load initial page
   useEffect(() => {
@@ -96,6 +101,12 @@ export default function LikedYouScreen() {
     }
   }, [nextCursor, loadingMore]);
 
+  // Filter cards by lane
+  const filteredCards = useMemo(() => {
+    if (laneFilter === 'all') return cards;
+    return cards.filter((card) => card.lane === laneFilter);
+  }, [cards, laneFilter]);
+
   // Handle card press
   const handleCardPress = useCallback((card: LikedYouCard) => {
     if (!isPremium) {
@@ -110,6 +121,50 @@ export default function LikedYouScreen() {
       params: { id: card.liker_id, source: 'liked-you' },
     });
   }, [isPremium, router]);
+
+  /**
+   * Segmented control for lane filter
+   */
+  const renderLaneFilter = () => (
+    <View style={styles.laneFilterContainer}>
+      <TouchableOpacity
+        style={[styles.laneFilterButton, laneFilter === 'all' && styles.laneFilterButtonActive]}
+        onPress={() => setLaneFilter('all')}
+        activeOpacity={0.7}
+      >
+        <AppText
+          variant="body"
+          style={[styles.laneFilterText, laneFilter === 'all' && styles.laneFilterTextActive]}
+        >
+          All
+        </AppText>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.laneFilterButton, laneFilter === 'pals' && styles.laneFilterButtonActive]}
+        onPress={() => setLaneFilter('pals')}
+        activeOpacity={0.7}
+      >
+        <AppText
+          variant="body"
+          style={[styles.laneFilterText, laneFilter === 'pals' && styles.laneFilterTextActive]}
+        >
+          Pals
+        </AppText>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.laneFilterButton, laneFilter === 'match' && styles.laneFilterButtonActive]}
+        onPress={() => setLaneFilter('match')}
+        activeOpacity={0.7}
+      >
+        <AppText
+          variant="body"
+          style={[styles.laneFilterText, laneFilter === 'match' && styles.laneFilterTextActive]}
+        >
+          Match
+        </AppText>
+      </TouchableOpacity>
+    </View>
+  );
 
   // Render card
   const renderCard = useCallback(({ item }: { item: LikedYouCard }) => {
@@ -140,6 +195,9 @@ export default function LikedYouScreen() {
                 </AppText>
               </View>
             )}
+            <View style={styles.badgeContainer}>
+              <LaneBadge lane={item.lane} />
+            </View>
             <View style={styles.cardInfo}>
               <AppText variant="body" style={styles.cardText} numberOfLines={2}>
                 {displayText}
@@ -163,6 +221,9 @@ export default function LikedYouScreen() {
               </View>
             )}
             <View style={styles.blurOverlay} />
+            <View style={styles.badgeContainer}>
+              <LaneBadge lane={item.lane} />
+            </View>
             <View style={styles.cardInfo}>
               <AppText variant="body" style={styles.cardText} numberOfLines={2}>
                 {displayText}
@@ -238,8 +299,11 @@ export default function LikedYouScreen() {
 
   return (
     <ScreenContainer>
+      {/* Lane Filter */}
+      {renderLaneFilter()}
+      
       <FlatList<LikedYouCard>
-        data={cards}
+        data={filteredCards}
         renderItem={renderCard}
         keyExtractor={(item) => item.liker_id}
         numColumns={2}
@@ -268,6 +332,38 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     opacity: 0.7,
+  },
+  // Lane filter
+  laneFilterContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
+    backgroundColor: Colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(31, 41, 55, 0.1)',
+  },
+  laneFilterButton: {
+    flex: 1,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: 20,
+    backgroundColor: 'rgba(31, 41, 55, 0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  laneFilterButtonActive: {
+    backgroundColor: Colors.primary,
+  },
+  laneFilterText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.text,
+    opacity: 0.7,
+  },
+  laneFilterTextActive: {
+    color: Colors.background,
+    opacity: 1,
   },
   content: {
     padding: Spacing.md,
@@ -313,6 +409,15 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     position: 'absolute',
+  },
+  badgeContainer: {
+    position: 'absolute',
+    top: Spacing.sm,
+    right: Spacing.sm,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 2,
+    zIndex: 2,
   },
   placeholderImage: {
     backgroundColor: Colors.primary,

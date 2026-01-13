@@ -97,7 +97,7 @@ function MyBadgesTab() {
       router.push('/(tabs)/account?tab=photos');
     } else if (badgeType === 'selfie_verified') {
       // Start selfie verification flow
-      router.push('/(tabs)/account/selfie-verification');
+      router.push('/(selfie)/intro');
     }
   };
 
@@ -236,7 +236,7 @@ export default function AccountScreen() {
         <View style={styles.headerIcons}>
           <TouchableOpacity
             style={styles.headerButton}
-            onPress={() => router.push('/(profile)/preferences')}
+            onPress={() => router.push('/(profile)/preferences?from=account')}
           >
             <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
           </TouchableOpacity>

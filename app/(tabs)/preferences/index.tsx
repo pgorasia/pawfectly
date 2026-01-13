@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, TextInput } from 'react-native';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
@@ -250,7 +251,6 @@ export default function PreferencesScreen() {
   const hasUnsavedChanges = useRef(false);
   const isSaving = useRef(false); // Prevent duplicate saves
   
-  
   // Use refs to capture latest values without triggering re-renders
   const selectedStylesRef = useRef(selectedStyles);
   const preferencesRef = useRef(draft.preferences);
@@ -347,8 +347,25 @@ export default function PreferencesScreen() {
     router.back();
   };
 
+  const handleBack = () => {
+    if (params.from === 'account') {
+      router.push('/(tabs)/account');
+    } else if (params.from === 'feed') {
+      router.push('/(tabs)');
+    } else {
+      router.back();
+    }
+  };
+
   return (
-    <ScreenContainer>
+    <ScreenContainer edges={['top']}>
+      {isEditMode && (
+        <View style={styles.backButtonContainer}>
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
+            <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
+          </TouchableOpacity>
+        </View>
+      )}
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -482,6 +499,14 @@ export default function PreferencesScreen() {
 }
 
 const styles = StyleSheet.create({
+  backButtonContainer: {
+    padding: Spacing.md,
+    paddingTop: Spacing.lg,
+  },
+  backButton: {
+    padding: Spacing.sm,
+    marginLeft: -Spacing.sm,
+  },
   scrollContent: {
     flexGrow: 1,
     padding: Spacing.lg,
