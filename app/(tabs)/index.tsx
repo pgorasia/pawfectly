@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { View, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, Modal, ActivityIndicator, Alert, Dimensions } from 'react-native';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming, withSpring, Easing, runOnJS } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Crypto from 'expo-crypto';
@@ -143,6 +144,50 @@ export default function FeedScreen() {
     const index = indexByLane[lane];
     return queue[index] || null;
   }, [queueByLane, indexByLane, lane]);
+
+  // Animation state for card swipes - MUST be defined before animated styles
+  const cardTranslateX = useSharedValue(0);
+  const cardTranslateY = useSharedValue(0);
+  const cardOpacity = useSharedValue(1);
+  const cardScale = useSharedValue(1);
+  const cardRotation = useSharedValue(0); // For curved motion
+  const [isAnimating, setIsAnimating] = useState(false);
+  
+  // Track undo progress (0 to 1, where 1 = time expired) - MUST be defined before animated styles
+  const undoProgress = useSharedValue(0);
+  const undoProgressTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Animated style for card
+  const cardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: cardTranslateX.value },
+      { translateY: cardTranslateY.value },
+      { scale: cardScale.value },
+      { rotate: `${cardRotation.value}deg` },
+    ],
+    opacity: cardOpacity.value,
+  }));
+
+  // Animated style for undo progress circle - border disappears clockwise
+  const undoProgressAnimatedStyle = useAnimatedStyle(() => {
+    const progress = undoProgress.value;
+    // Rotate a mask that covers the border (starts from top, rotates clockwise)
+    // The mask covers the border to make it disappear
+    const rotation = -90 + progress * 360;
+    
+    return {
+      transform: [{ rotate: `${rotation}deg` }],
+    };
+  });
+  
+  // Animated style for the border opacity - makes border fade as it disappears
+  const undoBorderOpacityStyle = useAnimatedStyle(() => {
+    const progress = undoProgress.value;
+    // Border opacity decreases as progress increases
+    return {
+      opacity: 1 - progress * 0.5, // Fade out gradually
+    };
+  });
   
   // UI state
   const [loading, setLoading] = useState(true);
@@ -431,19 +476,48 @@ export default function FeedScreen() {
     };
   }, [pendingUndo, pendingUndoNew]);
 
-  // Auto-expire pendingUndoNew after 10 seconds
+  // Auto-expire pendingUndoNew after 10 seconds and update progress
   useEffect(() => {
-    if (!pendingUndoNew) return;
+    if (!pendingUndoNew) {
+      undoProgress.value = 0;
+      if (undoProgressTimer.current) {
+        clearInterval(undoProgressTimer.current);
+        undoProgressTimer.current = null;
+      }
+      return;
+    }
+
+    const startTime = Date.now();
+    const duration = 10_000; // 10 seconds
+    
+    // Update progress every 50ms for smooth animation
+    undoProgressTimer.current = setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      undoProgress.value = progress;
+      
+      if (progress >= 1) {
+        if (undoProgressTimer.current) {
+          clearInterval(undoProgressTimer.current);
+          undoProgressTimer.current = null;
+        }
+      }
+    }, 50);
 
     const timer = setTimeout(() => {
       console.log('[FeedScreen] Undo grace period expired, clearing pendingUndo');
       setPendingUndoNew(null);
-    }, 10_000); // 10 seconds
+      undoProgress.value = 0;
+    }, duration);
 
     return () => {
       clearTimeout(timer);
+      if (undoProgressTimer.current) {
+        clearInterval(undoProgressTimer.current);
+        undoProgressTimer.current = null;
+      }
     };
-  }, [pendingUndoNew]);
+  }, [pendingUndoNew, undoProgress]);
 
   // Cleanup empty state timeout on unmount
   useEffect(() => {
@@ -812,68 +886,145 @@ export default function FeedScreen() {
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
   }, [lane, queueByLane, indexByLane, cursorByLane, loadFeedPage]);
 
+  // Animation helper to trigger swipe animation
+  const animateSwipe = useCallback((direction: 'left' | 'right' | 'up', onComplete: () => void) => {
+    setIsAnimating(true);
+    const screenWidth = Dimensions.get('window').width;
+    const screenHeight = Dimensions.get('window').height;
+    const ANIMATION_DURATION = 500; // Slower animation (was 300)
+    
+    if (direction === 'left') {
+      // Swipe left (Pass) - curved motion like circular arc
+      cardTranslateX.value = withTiming(-screenWidth * 1.5, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      });
+      // Add slight upward curve and rotation for circular motion
+      cardTranslateY.value = withTiming(-screenHeight * 0.2, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      });
+      cardRotation.value = withTiming(-30, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      }, () => {
+        runOnJS(onComplete)();
+      });
+      cardOpacity.value = withTiming(0, { duration: ANIMATION_DURATION });
+    } else if (direction === 'right') {
+      // Swipe right (Like) - curved motion like circular arc
+      cardTranslateX.value = withTiming(screenWidth * 1.5, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      });
+      // Add slight upward curve and rotation for circular motion
+      cardTranslateY.value = withTiming(-screenHeight * 0.2, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      });
+      cardRotation.value = withTiming(30, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      }, () => {
+        runOnJS(onComplete)();
+      });
+      cardOpacity.value = withTiming(0, { duration: ANIMATION_DURATION });
+    } else if (direction === 'up') {
+      // Swipe up (Skip)
+      cardTranslateY.value = withTiming(-screenHeight * 1.5, {
+        duration: ANIMATION_DURATION,
+        easing: Easing.out(Easing.cubic),
+      }, () => {
+        runOnJS(onComplete)();
+      });
+      cardOpacity.value = withTiming(0, { duration: ANIMATION_DURATION });
+    }
+  }, [cardTranslateX, cardTranslateY, cardOpacity, cardRotation]);
+
+  // Reset animation state
+  const resetCardAnimation = useCallback(() => {
+    cardTranslateX.value = 0;
+    cardTranslateY.value = 0;
+    cardOpacity.value = 1;
+    cardScale.value = 1;
+    cardRotation.value = 0;
+    setIsAnimating(false);
+  }, [cardTranslateX, cardTranslateY, cardOpacity, cardScale, cardRotation]);
+
   // Handle swipe actions
   const handleSwipe = useCallback(async (action: 'reject' | 'pass' | 'accept') => {
-    if (!user?.id || !currentProfile || swiping) return;
+    if (!user?.id || !currentProfile || swiping || isAnimating) return;
 
     const candidateId = currentProfile.candidate.user_id;
     setSwiping(true);
 
     try {
       if (action === 'reject' || action === 'pass') {
-        // Optimistic update: create event and enqueue (no RPC call)
-        const currentLane = lane;
-        const now = Date.now();
-        const eventId = Crypto.randomUUID();
+        // Trigger animation
+        const animationDirection = action === 'reject' ? 'left' : 'up';
+        animateSwipe(animationDirection, () => {
+          // After animation completes, do the actual swipe logic
+          const currentLane = lane;
+          const now = Date.now();
+          const eventId = Crypto.randomUUID();
 
-        const event: DislikeEvent = {
-          eventId,
-          targetId: candidateId,
-          lane: currentLane,
-          action: action === 'reject' ? 'reject' : 'skip',
-          createdAtMs: now,
-          commitAfterMs: now + 10_000,
-          ...(action === 'reject' ? { crossLaneDays: 30 } : { skipDays: 7 }),
-          snapshot: currentProfile,
-        };
+          const event: DislikeEvent = {
+            eventId,
+            targetId: candidateId,
+            lane: currentLane,
+            action: action === 'reject' ? 'reject' : 'skip',
+            createdAtMs: now,
+            commitAfterMs: now + 10_000,
+            ...(action === 'reject' ? { crossLaneDays: 30 } : { skipDays: 7 }),
+            snapshot: currentProfile,
+          };
 
-        // Push event to dislikeOutbox
-        setDislikeOutbox((prev) => [...prev, event]);
+          // Push event to dislikeOutbox
+          setDislikeOutbox((prev) => [...prev, event]);
 
-        // Set pendingUndo
-        setPendingUndoNew(event);
+          // Set pendingUndo
+          setPendingUndoNew(event);
 
-        // Update legacy undo state for UI compatibility
-        setLastAction(action === 'reject' ? 'reject' : 'pass');
-        setLastCandidateId(candidateId);
+          // Update legacy undo state for UI compatibility
+          setLastAction(action === 'reject' ? 'reject' : 'pass');
+          setLastCandidateId(candidateId);
 
-        // Advance immediately (optimistic)
-        advanceToNext();
-        setSwiping(false);
+          // Advance immediately (optimistic)
+          advanceToNext();
+          resetCardAnimation();
+          setSwiping(false);
+        });
         return;
       } else if (action === 'accept') {
-        const result = await submitSwipe(candidateId, 'accept', lane);
+        // Trigger swipe right animation
+        animateSwipe('right', async () => {
+          const result = await submitSwipe(candidateId, 'accept', lane);
 
-        if (result.ok) {
-          if (result.remaining_accepts !== undefined) {
-            setRemainingAccepts(result.remaining_accepts);
+          if (result.ok) {
+            if (result.remaining_accepts !== undefined) {
+              setRemainingAccepts(result.remaining_accepts);
+            }
+            // Clear undo state for accept/like actions
+            setLastAction(null);
+            setLastCandidateId(null);
+            advanceToNext();
+            resetCardAnimation();
+          } else if (result.error === 'daily_limit_reached') {
+            setShowPremiumModal(true);
+            resetCardAnimation();
+            // Don't advance - keep current profile
           }
-          // Clear undo state for accept/like actions
-          setLastAction(null);
-          setLastCandidateId(null);
-          advanceToNext();
-        } else if (result.error === 'daily_limit_reached') {
-          setShowPremiumModal(true);
-          // Don't advance - keep current profile
-        }
+          setSwiping(false);
+        });
+        return;
       }
     } catch (error) {
       console.error('[FeedScreen] Failed to submit swipe:', error);
       Alert.alert('Error', 'Failed to submit swipe. Please try again.');
-    } finally {
+      resetCardAnimation();
       setSwiping(false);
     }
-  }, [user?.id, currentProfile, swiping, advanceToNext, pendingUndo]);
+  }, [user?.id, currentProfile, swiping, isAnimating, lane, animateSwipe, resetCardAnimation, advanceToNext]);
 
   // Handle heart press (like from photo/prompt)
   const handleHeartPress = useCallback((source: { type: 'photo' | 'prompt'; refId: string }) => {
@@ -1041,27 +1192,31 @@ export default function FeedScreen() {
     const currentIndex = indexByLane[undoLane];
     const currentProfileAtIndex = currentQueue[currentIndex] || null;
     
+    // Start with card off-screen to the left, then animate it in
+    const screenWidth = Dimensions.get('window').width;
+    cardTranslateX.value = -screenWidth * 1.5;
+    cardOpacity.value = 0;
+    
     setQueueByLane((prev) => {
       const queue = prev[undoLane];
       
-      // If there's a current profile, put it at the front of the queue
+      // Remove undoneId from queue to avoid duplicates
+      const queueWithoutUndone = queue.filter((p) => p.candidate.user_id !== undoneId);
+      
+      // If there's a current profile, remove it too to avoid duplicates
+      let finalQueue = queueWithoutUndone;
       if (currentProfileAtIndex) {
         const currentId = currentProfileAtIndex.candidate.user_id;
-        // Remove both currentId and undoneId from queue to avoid duplicates
-        const rest = queue.filter((p) => 
-          p.candidate.user_id !== currentId && 
-          p.candidate.user_id !== undoneId
-        );
-        // Put current profile at the front (it will be next after the undone profile)
-        const finalQueue = [currentProfileAtIndex, ...rest];
-        queueStateRef.current.queueLength = finalQueue.length;
-        return { ...prev, [undoLane]: finalQueue };
+        finalQueue = queueWithoutUndone.filter((p) => p.candidate.user_id !== currentId);
+        // Put current profile after the undone profile (at index 1)
+        finalQueue = [snapshot, currentProfileAtIndex, ...finalQueue];
+      } else {
+        // No current profile, just add snapshot at the front
+        finalQueue = [snapshot, ...queueWithoutUndone];
       }
       
-      // No current profile, just remove undone from queue
-      const rest = queue.filter((p) => p.candidate.user_id !== undoneId);
-      queueStateRef.current.queueLength = rest.length;
-      return { ...prev, [undoLane]: rest };
+      queueStateRef.current.queueLength = finalQueue.length;
+      return { ...prev, [undoLane]: finalQueue };
     });
 
     // Set index to 0 to show the undone profile
@@ -1077,7 +1232,22 @@ export default function FeedScreen() {
     // Reset scroll state
     setHasScrolledPastHero(false);
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-  }, [pendingUndoNew, queueByLane, indexByLane]);
+
+    // Animate card coming back from left (reverse swipe)
+    cardTranslateX.value = withSpring(0, {
+      damping: 15,
+      stiffness: 150,
+    });
+    cardOpacity.value = withTiming(1, { duration: 500 });
+    cardTranslateY.value = withSpring(0, {
+      damping: 15,
+      stiffness: 150,
+    });
+    cardRotation.value = withSpring(0, {
+      damping: 15,
+      stiffness: 150,
+    });
+  }, [pendingUndoNew, queueByLane, indexByLane, cardTranslateX, cardOpacity, cardTranslateY, cardRotation]);
 
   if (loading) {
     return (
@@ -1098,36 +1268,41 @@ export default function FeedScreen() {
     <ScreenContainer>
       <View style={styles.header}>
         <AppText variant="heading" style={styles.appName}>
-          Pawfectly
+          Pawfect
         </AppText>
         <View style={styles.headerRight}>
-          <View style={styles.headerTopRow}>
+          {hasProfile && pendingUndoNew && (
             <TouchableOpacity
               style={styles.headerButton}
-              onPress={() => router.push('/(tabs)/preferences?from=feed')}
+              onPress={handleUndo}
+              disabled={swiping}
             >
-              <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
+              <View style={styles.undoButtonContainer}>
+                {/* Undo icon - stays intact */}
+                <MaterialIcons name="undo" size={20} color={Colors.primary} style={styles.undoIcon} />
+                {/* Circular border that disappears with countdown */}
+                <Animated.View 
+                  style={[
+                    styles.undoProgressCircle,
+                    undoBorderOpacityStyle,
+                  ]}
+                />
+                {/* Rotating overlay that covers the border progressively (only border, not center) */}
+                <Animated.View 
+                  style={[
+                    styles.undoProgressOverlay,
+                    undoProgressAnimatedStyle,
+                  ]}
+                />
+              </View>
             </TouchableOpacity>
-          </View>
-          {hasProfile && (
-            <View style={styles.headerBottomRow}>
-              {pendingUndoNew && (
-                <TouchableOpacity
-                  style={styles.headerButton}
-                  onPress={handleUndo}
-                  disabled={swiping}
-                >
-                  <MaterialIcons name="undo" size={24} color={Colors.primary} />
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                style={styles.headerButton}
-                onPress={() => setShowBlockMenu(true)}
-              >
-                <MaterialIcons name="more-horiz" size={24} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
           )}
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => router.push('/(tabs)/preferences?from=feed')}
+          >
+            <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -1191,30 +1366,38 @@ export default function FeedScreen() {
       {/* Profile Content */}
       <View style={styles.contentContainer}>
         {hasProfile ? (
-          <ScrollView
-            ref={scrollViewRef}
-            style={styles.scrollView}
-            contentContainerStyle={styles.scrollContent}
-            refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-            }
-            showsVerticalScrollIndicator={false}
-            onScroll={(event) => {
-              const offsetY = event.nativeEvent.contentOffset.y;
-              const HERO_HEIGHT = Dimensions.get('window').width * 1.2;
-              if (offsetY > HERO_HEIGHT * 0.3 && !hasScrolledPastHero) {
-                setHasScrolledPastHero(true);
-              }
-            }}
-            scrollEventThrottle={16}
+          <Animated.View
+            style={[
+              styles.cardContainer,
+              cardAnimatedStyle,
+            ]}
           >
-            <FullProfileView
-              key={currentProfile.candidate.user_id}
-              payload={currentProfile}
-              onHeartPress={handleHeartPress}
-              hasScrolledPastHero={hasScrolledPastHero}
-            />
-          </ScrollView>
+            <ScrollView
+              ref={scrollViewRef}
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+              }
+              showsVerticalScrollIndicator={false}
+              onScroll={(event) => {
+                const offsetY = event.nativeEvent.contentOffset.y;
+                const HERO_HEIGHT = Dimensions.get('window').width * 1.2;
+                if (offsetY > HERO_HEIGHT * 0.3 && !hasScrolledPastHero) {
+                  setHasScrolledPastHero(true);
+                }
+              }}
+              scrollEventThrottle={16}
+            >
+              <FullProfileView
+                key={currentProfile.candidate.user_id}
+                payload={currentProfile}
+                onHeartPress={handleHeartPress}
+                hasScrolledPastHero={hasScrolledPastHero}
+                onMorePress={() => setShowBlockMenu(true)}
+              />
+            </ScrollView>
+          </Animated.View>
         ) : exhaustedByLane[lane] && queueByLane[lane].length === 0 ? (
           // Empty state for both lanes
           <View style={styles.emptyContainer}>
@@ -1396,19 +1579,9 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   headerRight: {
-    flexDirection: 'column',
-    alignItems: 'flex-end',
-    gap: Spacing.xs,
-  },
-  headerTopRow: {
     flexDirection: 'row',
-    gap: Spacing.sm,
     alignItems: 'center',
-  },
-  headerBottomRow: {
-    flexDirection: 'row',
     gap: Spacing.sm,
-    alignItems: 'center',
   },
   headerButton: {
     padding: Spacing.sm,
@@ -1454,11 +1627,50 @@ const styles = StyleSheet.create({
   contentContainer: {
     flex: 1,
   },
+  cardContainer: {
+    flex: 1,
+    position: 'relative',
+  },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
+  },
+  undoButtonContainer: {
+    width: 36,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  undoProgressCircle: {
+    position: 'absolute',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2.5,
+    borderColor: Colors.primary,
+  },
+  undoProgressOverlay: {
+    position: 'absolute',
+    // Half-circle that rotates to cover the border progressively
+    // Positioned to only cover the border area, not the center icon
+    width: 19,
+    height: 36,
+    backgroundColor: Colors.background,
+    // Start from right edge (12 o'clock position after -90deg rotation)
+    left: 18,
+    top: 0,
+    borderTopRightRadius: 18,
+    borderBottomRightRadius: 18,
+    // Ensure it's above the border but below the icon
+    zIndex: 1,
+  },
+  undoIcon: {
+    // Ensure icon is on top of everything
+    zIndex: 2,
+    position: 'relative',
   },
   emptyContainer: {
     flex: 1,

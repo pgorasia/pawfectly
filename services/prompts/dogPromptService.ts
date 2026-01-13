@@ -139,16 +139,27 @@ export async function saveDogPromptAnswers(
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     
     // Filter out answers with invalid UUIDs (e.g., fallback prompts like 'fallback-5')
+    // and filter out answers with empty or whitespace-only response text
     const validAnswers = answers.filter(answer => {
-      const isValid = uuidRegex.test(answer.prompt_question_id);
-      if (!isValid) {
+      // Check UUID validity
+      const isValidUuid = uuidRegex.test(answer.prompt_question_id);
+      if (!isValidUuid) {
         console.warn(`[dogPromptService] Skipping answer with invalid prompt_question_id: ${answer.prompt_question_id}`);
+        return false;
       }
-      return isValid;
+      
+      // Check that answer_text is not empty or whitespace-only
+      const hasValidAnswer = answer.answer_text && answer.answer_text.trim().length > 0;
+      if (!hasValidAnswer) {
+        console.warn(`[dogPromptService] Skipping answer with empty response text for prompt_question_id: ${answer.prompt_question_id}`);
+        return false;
+      }
+      
+      return true;
     });
 
     if (validAnswers.length === 0 && answers.length > 0) {
-      console.warn('[dogPromptService] No valid answers to save (all prompt_question_ids were invalid)');
+      console.warn('[dogPromptService] No valid answers to save (all prompt_question_ids were invalid or had empty responses)');
       // Still proceed to delete existing answers if needed
     }
 

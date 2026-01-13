@@ -105,7 +105,20 @@ export const ProfileDraftProvider: React.FC<{ children: ReactNode }> = ({ childr
   const [draftHydrated, setDraftHydrated] = useState(false);
 
   const updateDogs = useCallback((dogs: DogProfile[]) => {
-    setDraft((prev) => ({ ...prev, dogs }));
+    // Filter out prompts with empty responses before updating cache
+    const dogsWithValidPrompts = dogs.map(dog => {
+      if (!dog.prompts || dog.prompts.length === 0) {
+        return dog;
+      }
+      const validPrompts = dog.prompts.filter(
+        prompt => prompt.answer_text && prompt.answer_text.trim().length > 0
+      );
+      return {
+        ...dog,
+        prompts: validPrompts.length > 0 ? validPrompts : undefined,
+      };
+    });
+    setDraft((prev) => ({ ...prev, dogs: dogsWithValidPrompts }));
   }, []);
 
   const addDog = useCallback((dog: DogProfile) => {

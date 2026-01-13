@@ -21,6 +21,7 @@ interface FullProfileViewProps {
   onHeartPress?: (source: { type: 'photo' | 'prompt'; refId: string }) => void;
   hasScrolledPastHero?: boolean;
   readOnly?: boolean;
+  onMorePress?: () => void; // Callback for (...) icon press on hero photo
 }
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -31,6 +32,7 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
   onHeartPress,
   hasScrolledPastHero = false,
   readOnly = false,
+  onMorePress,
 }) => {
   const { me } = useMe();
 
@@ -156,6 +158,17 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
         
         {/* Hero Overlay Gradient */}
         <View style={styles.heroOverlayGradient} />
+        
+        {/* More button (...) - Top Right */}
+        {onMorePress && (
+          <TouchableOpacity
+            style={styles.heroMoreButton}
+            onPress={onMorePress}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <MaterialIcons name="more-vert" size={24} color={Colors.background} />
+          </TouchableOpacity>
+        )}
         
         {/* Hero Overlay Content - Bottom Left */}
         <View style={styles.heroOverlay}>
@@ -495,6 +508,18 @@ const styles = StyleSheet.create({
     right: 0,
     height: 200,
     backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  heroMoreButton: {
+    position: 'absolute',
+    top: Spacing.lg,
+    right: Spacing.lg,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
   },
   heroOverlay: {
     position: 'absolute',
