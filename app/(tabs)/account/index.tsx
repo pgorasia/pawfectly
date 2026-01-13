@@ -230,13 +230,13 @@ export default function AccountScreen() {
   }, [params.tab]);
 
   return (
-    <ScreenContainer>
+    <ScreenContainer edges={['top']}>
       <View style={styles.header}>
         <View style={styles.headerSpacer} />
         <View style={styles.headerIcons}>
           <TouchableOpacity
             style={styles.headerButton}
-            onPress={() => router.push('/(profile)/preferences?from=account')}
+            onPress={() => router.push('/(tabs)/preferences?from=account')}
           >
             <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
           </TouchableOpacity>
@@ -345,7 +345,6 @@ const styles = StyleSheet.create({
   },
   tabContentContainer: {
     padding: Spacing.lg,
-    paddingBottom: Spacing.xl,
   },
   section: {
     marginBottom: Spacing.xl,

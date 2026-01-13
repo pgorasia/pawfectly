@@ -11,7 +11,7 @@ export default function WelcomeScreen() {
   const router = useRouter();
 
   return (
-    <ScreenContainer>
+    <ScreenContainer showBottomSpacer={true}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}

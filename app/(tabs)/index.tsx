@@ -1104,7 +1104,7 @@ export default function FeedScreen() {
           <View style={styles.headerTopRow}>
             <TouchableOpacity
               style={styles.headerButton}
-              onPress={() => router.push('/(profile)/preferences?from=feed')}
+              onPress={() => router.push('/(tabs)/preferences?from=feed')}
             >
               <IconSymbol name="slider.horizontal.3" size={24} color={Colors.text} />
             </TouchableOpacity>
@@ -1226,7 +1226,7 @@ export default function FeedScreen() {
             <View style={styles.emptyActionsContainer}>
               <AppButton
                 variant="primary"
-                onPress={() => router.push('/(profile)/preferences')}
+                onPress={() => router.push('/(tabs)/preferences')}
                 style={styles.emptyActionButton}
               >
                 Adjust filters

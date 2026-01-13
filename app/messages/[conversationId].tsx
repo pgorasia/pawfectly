@@ -23,6 +23,7 @@ import {
   Alert,
   ScrollView,
   Image,
+  Keyboard,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -202,6 +203,9 @@ export default function ChatThreadScreen() {
   const [profileData, setProfileData] = useState<ProfileViewPayload | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
 
+  // Keyboard state
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
   const flatListRef = useRef<FlatList>(null);
   const inputRef = useRef<TextInput>(null);
   const hasMarkedRead = useRef(false);
@@ -323,6 +327,21 @@ export default function ChatThreadScreen() {
       loadProfile();
     }
   }, [activeTab, profileData, peerUserId]);
+
+  // Track keyboard visibility
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
+      setIsKeyboardVisible(true);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      setIsKeyboardVisible(false);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   // Mark conversation as read when screen becomes active
   useEffect(() => {
@@ -969,7 +988,10 @@ export default function ChatThreadScreen() {
               </View>
             ) : (
               <View style={styles.footerContainer}>
-                <View style={styles.inputContainer}>
+                <View style={[
+                  styles.inputContainer,
+                  isKeyboardVisible && { paddingBottom: Spacing.sm + Math.max(insets.bottom, 0) }
+                ]}>
                   <TextInput
                     ref={inputRef}
                     style={styles.input}
@@ -1007,21 +1029,27 @@ export default function ChatThreadScreen() {
           </View>
         </KeyboardAvoidingView>
       ) : (
-        <ScrollView style={styles.profileContainer}>
-          {profileLoading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={Colors.primary} />
-            </View>
-          ) : profileData ? (
-            <FullProfileView payload={profileData} readOnly={true} />
-          ) : (
-            <View style={styles.emptyState}>
-              <AppText variant="body" style={styles.emptyStateText}>
-                Profile not available
-              </AppText>
-            </View>
-          )}
-        </ScrollView>
+        <View style={styles.profileContainer}>
+          <ScrollView 
+            contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 0) }}
+          >
+            {profileLoading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={Colors.primary} />
+              </View>
+            ) : profileData ? (
+              <FullProfileView payload={profileData} readOnly={true} />
+            ) : (
+              <View style={styles.emptyState}>
+                <AppText variant="body" style={styles.emptyStateText}>
+                  Profile not available
+                </AppText>
+              </View>
+            )}
+          </ScrollView>
+          {/* System navigation spacer ("letterbox") for Android navigation buttons */}
+          <View style={[styles.systemBarSpacer, { height: systemBarSpacerHeight, backgroundColor: systemBarSpacerColor }]} />
+        </View>
       )}
     </SafeAreaView>
   );

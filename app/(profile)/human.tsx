@@ -238,7 +238,7 @@ export default function HumanScreen() {
     (locationFromGPS || city.trim().length > 0);
 
   return (
-    <ScreenContainer>
+    <ScreenContainer showBottomSpacer={true}>
       <ProgressBar
         currentStep={2}
         totalSteps={4}

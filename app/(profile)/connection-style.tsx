@@ -346,7 +346,7 @@ export default function ConnectionStyleScreen() {
   const canContinue = selectedStyles.length > 0;
 
   return (
-    <ScreenContainer>
+    <ScreenContainer showBottomSpacer={true}>
       <ProgressBar
         currentStep={4}
         totalSteps={4}

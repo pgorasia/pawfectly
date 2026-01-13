@@ -457,7 +457,6 @@ export default function MyPackTab({ onNewDogAdded }: MyPackTabProps) {
 const styles = StyleSheet.create({
   scrollContent: {
     padding: Spacing.lg,
-    paddingBottom: Spacing.xl,
   },
   section: {
     marginBottom: Spacing.xl,
@@ -526,7 +525,6 @@ const editStyles = StyleSheet.create({
   },
   scrollContent: {
     padding: Spacing.lg,
-    paddingBottom: Spacing.xl,
   },
   header: {
     flexDirection: 'row',

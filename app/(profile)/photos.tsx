@@ -261,7 +261,7 @@ export default function PhotosScreen() {
   };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer showBottomSpacer={true}>
       {/* Only show progress bar during onboarding */}
       {!isCorrectiveAction && (
         <ProgressBar

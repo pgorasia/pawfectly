@@ -513,7 +513,7 @@ export default function DogsScreen() {
   const canContinue = dogsValid;
 
   return (
-    <ScreenContainer>
+    <ScreenContainer showBottomSpacer={true}>
       <ProgressBar
         currentStep={1}
         totalSteps={4}

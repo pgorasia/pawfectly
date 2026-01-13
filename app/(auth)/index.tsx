@@ -204,7 +204,7 @@ export default function AuthScreen() {
   };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer showBottomSpacer={true}>
       <View style={styles.container}>
         <View style={styles.header}>
           <AppText variant="heading" style={styles.title}>
