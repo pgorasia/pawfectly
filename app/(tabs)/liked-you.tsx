@@ -5,25 +5,21 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
-import { LaneBadge } from '@/components/messages/LaneBadge';
+import { LaneBadge, type LaneBadgeValue } from '@/components/messages/LaneBadge';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
-import { 
-  getLikedYouPage, 
-  type LikedYouCard, 
-  type LikedYouCursor 
-} from '@/services/feed/likedYouService';
+import { getLikedYouPage, type LikedYouCard, type LikedYouCursor } from '@/services/feed/likedYouService';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicPhotoUrl } from '@/utils/photoUrls';
-import type { Lane } from '@/services/messages/messagesService';
 
 type LaneFilter = 'all' | 'pals' | 'match';
 
 export default function LikedYouScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  
+
   const [cards, setCards] = useState<LikedYouCard[]>([]);
+
   const [nextCursor, setNextCursor] = useState<LikedYouCursor | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,13 +30,14 @@ export default function LikedYouScreen() {
   // Load initial page
   useEffect(() => {
     if (!user?.id) return;
-    
+
     const loadInitial = async () => {
       try {
         setLoading(true);
-        const { rows, nextCursor: cursor } = await getLikedYouPage(20);
-        setCards(rows);
-        setNextCursor(cursor);
+        const likedRes = await getLikedYouPage(20);
+
+        setCards(likedRes.rows);
+        setNextCursor(likedRes.nextCursor);
       } catch (error) {
         console.error('[LikedYouScreen] Failed to load initial page:', error);
       } finally {
@@ -55,13 +52,12 @@ export default function LikedYouScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!user?.id || loading) return;
-      
-      // Silently refresh in background
+
       const refreshOnFocus = async () => {
         try {
-          const { rows, nextCursor: cursor } = await getLikedYouPage(20);
-          setCards(rows);
-          setNextCursor(cursor);
+          const likedRes = await getLikedYouPage(20);
+          setCards(likedRes.rows);
+          setNextCursor(likedRes.nextCursor);
         } catch (error) {
           console.error('[LikedYouScreen] Failed to refresh on focus:', error);
         }
@@ -75,9 +71,9 @@ export default function LikedYouScreen() {
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const { rows, nextCursor: cursor } = await getLikedYouPage(20);
-      setCards(rows);
-      setNextCursor(cursor);
+      const likedRes = await getLikedYouPage(20);
+      setCards(likedRes.rows);
+      setNextCursor(likedRes.nextCursor);
     } catch (error) {
       console.error('[LikedYouScreen] Failed to refresh:', error);
     } finally {
@@ -101,11 +97,14 @@ export default function LikedYouScreen() {
     }
   }, [nextCursor, loadingMore]);
 
-  // Filter cards by lane
+  // Cross-lane pending is now surfaced in Messages > Matches; keep this screen strictly for inbound likes.
+  const normalCards = useMemo(() => cards.filter((c) => !c.requires_lane_choice), [cards]);
+
+  // Filter cards by lane (only applies to non-pending cards)
   const filteredCards = useMemo(() => {
-    if (laneFilter === 'all') return cards;
-    return cards.filter((card) => card.lane === laneFilter);
-  }, [cards, laneFilter]);
+    if (laneFilter === 'all') return normalCards;
+    return normalCards.filter((card) => card.lane === laneFilter);
+  }, [normalCards, laneFilter]);
 
   // Handle card press
   const handleCardPress = useCallback((card: LikedYouCard) => {
@@ -114,7 +113,7 @@ export default function LikedYouScreen() {
       console.log('Premium required to view profile');
       return;
     }
-    
+
     // Navigate to profile view
     router.push({
       pathname: '/profile/[id]',
@@ -169,9 +168,8 @@ export default function LikedYouScreen() {
   // Render card
   const renderCard = useCallback(({ item }: { item: LikedYouCard }) => {
     const photoUrl = publicPhotoUrl(item.hero_photo_storage_path);
-    const displayText = [item.dog_name, item.display_name, item.city]
-      .filter(Boolean)
-      .join(' • ');
+    const displayText = [item.dog_name, item.display_name, item.city].filter(Boolean).join(' • ');
+    const badgeLane = (item.badge_lane ?? item.lane) as LaneBadgeValue;
 
     return (
       <TouchableOpacity
@@ -179,84 +177,64 @@ export default function LikedYouScreen() {
         onPress={() => handleCardPress(item)}
         activeOpacity={0.9}
       >
-        {isPremium ? (
-          <>
-            {photoUrl ? (
-              <Image
-                source={{ uri: photoUrl }}
-                style={styles.cardImage}
-                contentFit="cover"
-                transition={200}
-              />
-            ) : (
-              <View style={[styles.cardImage, styles.placeholderImage]}>
-                <AppText variant="heading" style={styles.placeholderText}>
-                  {item.dog_name?.[0] || item.display_name?.[0] || '?'}
-                </AppText>
-              </View>
-            )}
-            <View style={styles.badgeContainer}>
-              <LaneBadge lane={item.lane} />
-            </View>
-            <View style={styles.cardInfo}>
-              <AppText variant="body" style={styles.cardText} numberOfLines={2}>
-                {displayText}
-              </AppText>
-            </View>
-          </>
+        {photoUrl ? (
+          <Image
+            source={{ uri: photoUrl }}
+            style={styles.cardImage}
+            contentFit="cover"
+            transition={200}
+          />
         ) : (
-          <>
-            {photoUrl ? (
-              <Image
-                source={{ uri: photoUrl }}
-                style={styles.cardImage}
-                contentFit="cover"
-                transition={200}
-              />
-            ) : (
-              <View style={[styles.cardImage, styles.placeholderImage]}>
-                <AppText variant="heading" style={styles.placeholderText}>
-                  {item.dog_name?.[0] || item.display_name?.[0] || '?'}
-                </AppText>
-              </View>
-            )}
-            <View style={styles.blurOverlay} />
-            <View style={styles.badgeContainer}>
-              <LaneBadge lane={item.lane} />
-            </View>
-            <View style={styles.cardInfo}>
-              <AppText variant="body" style={styles.cardText} numberOfLines={2}>
-                {displayText}
-              </AppText>
-            </View>
-          </>
+          <View style={[styles.cardImage, styles.placeholderImage]}>
+            <AppText variant="heading" style={styles.placeholderText}>
+              {item.dog_name?.[0] || item.display_name?.[0] || '?'}
+            </AppText>
+          </View>
         )}
+
+        {!isPremium && !item.requires_lane_choice ? <View style={styles.blurOverlay} /> : null}
+
+        <View style={styles.badgeContainer}>
+          <LaneBadge lane={badgeLane} />
+        </View>
+
+        <View style={styles.cardInfo}>
+          <AppText variant="body" style={styles.cardText} numberOfLines={2}>
+            {displayText}
+          </AppText>
+        </View>
       </TouchableOpacity>
     );
   }, [isPremium, handleCardPress]);
 
   // Render header
   const renderHeader = useCallback(() => {
-    if (isPremium || cards.length === 0) return null;
+    const showPremiumBanner = !isPremium && normalCards.length > 0;
+
+    if (!showPremiumBanner) return null;
 
     return (
-      <View style={styles.premiumBanner}>
-        <AppText variant="heading" style={styles.premiumTitle}>
-          Unlock Who Liked You
-        </AppText>
-        <AppText variant="body" style={styles.premiumSubtitle}>
-          {cards.length} {cards.length === 1 ? 'person has' : 'people have'} liked you
-        </AppText>
-        <AppButton
-          variant="primary"
-          onPress={() => setIsPremium(true)} // TODO: Navigate to subscription screen
-          style={styles.premiumButton}
-        >
-          Upgrade to Premium
-        </AppButton>
+      <View>
+        {showPremiumBanner ? (
+          <View style={styles.premiumBanner}>
+            <AppText variant="heading" style={styles.premiumTitle}>
+              Unlock Who Liked You
+            </AppText>
+            <AppText variant="body" style={styles.premiumSubtitle}>
+              {normalCards.length} {normalCards.length === 1 ? 'person has' : 'people have'} liked you
+            </AppText>
+            <AppButton
+              variant="primary"
+              onPress={() => setIsPremium(true)} // TODO: Navigate to subscription screen
+              style={styles.premiumButton}
+            >
+              Upgrade to Premium
+            </AppButton>
+          </View>
+        ) : null}
       </View>
     );
-  }, [isPremium, cards.length]);
+  }, [isPremium, normalCards.length]);
 
   // Render footer (loading more indicator)
   const renderFooter = useCallback(() => {
@@ -301,7 +279,7 @@ export default function LikedYouScreen() {
     <ScreenContainer>
       {/* Lane Filter */}
       {renderLaneFilter()}
-      
+
       <FlatList<LikedYouCard>
         data={filteredCards}
         renderItem={renderCard}
@@ -314,11 +292,10 @@ export default function LikedYouScreen() {
         ListEmptyComponent={renderEmpty}
         onEndReached={handleLoadMore}
         onEndReachedThreshold={0.5}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
         showsVerticalScrollIndicator={false}
       />
+
     </ScreenContainer>
   );
 }
@@ -464,4 +441,3 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
-

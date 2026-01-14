@@ -30,7 +30,22 @@ export type LikedYouCard = {
   hero_photo_storage_path: string | null;
   hero_photo_bucket_type: string | null;
   hero_photo_id: string | null;
+
+  /**
+   * The lane where the liker liked the current user (from swipes.lane).
+   * For cross-lane pending, this will usually be the match user's lane ('match').
+   */
   lane: 'pals' | 'match';
+
+  /**
+   * Optional UI helpers for cross-lane pending:
+   * - badge_lane = 'unknown' should render a '?' badge.
+   * - requires_lane_choice = true means tapping should prompt Pals vs Match.
+   * - expires_at provides an optional countdown.
+   */
+  badge_lane?: 'pals' | 'match' | 'unknown';
+  requires_lane_choice?: boolean;
+  expires_at?: string | null;
 };
 
 /**
@@ -64,12 +79,7 @@ export async function getLikedYouPage(
   }
 
   const rows = (data ?? []) as LikedYouCard[];
-  
-  // Debug: Log first row to see actual data structure
-  if (rows.length > 0) {
-    console.log('[likedYouService] Sample row data:', JSON.stringify(rows[0], null, 2));
-  }
-  
+
   if (rows.length === 0) {
     return { rows: [], nextCursor: null };
   }

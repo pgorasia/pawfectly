@@ -42,6 +42,7 @@ export const chatEvents = new ChatEventEmitter();
 export const CHAT_EVENTS = {
   FIRST_MESSAGE_SENT: 'first_message_sent',
   CONVERSATION_CLOSED: 'conversation_closed',
+  CROSS_LANE_RESOLVED: 'cross_lane_resolved',
 } as const;
 
 /**
@@ -58,4 +59,9 @@ export interface FirstMessageSentData {
 export interface ConversationClosedData {
   conversationId: string; // The conversation UUID that was closed
   reason: 'block' | 'unmatch' | 'report';
+}
+
+export interface CrossLaneResolvedData {
+  otherId: string;
+  chosenLane: 'pals' | 'match';
 }

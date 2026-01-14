@@ -3,3 +3,6 @@ verify_jwt = false
 
 [functions.validate-photo]
 verify_jwt = false
+
+[functions.auto-resolve-cross-lane]
+verify_jwt = false

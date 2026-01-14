@@ -6,12 +6,17 @@ import { publicPhotoUrl } from '@/utils/photoUrls';
 // ============================================================================
 
 export type Lane = 'pals' | 'match';
+export type BadgeLane = Lane | 'unknown';
 
 export interface Match {
   conversation_id?: string; // Optional - may not exist yet for new matches
   user_id: string;
   lane: Lane;
   connected_at: string;
+  // Cross-lane pending support (optional)
+  badge_lane?: BadgeLane | null; // UI badge override (e.g., 'unknown' => '?')
+  requires_lane_choice?: boolean; // true when chooser must pick Pals vs Match
+  expires_at?: string | null; // optional countdown/telemetry
   display_name: string;
   dog_name: string | null;
   hero_storage_path: string | null;
