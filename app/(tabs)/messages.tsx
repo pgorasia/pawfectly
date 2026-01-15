@@ -25,11 +25,9 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
-import { AppButton } from '@/components/ui/AppButton';
 import { MatchTile } from '@/components/messages/MatchTile';
 import { MessageRow } from '@/components/messages/MessageRow';
 import { RequestRow } from '@/components/messages/RequestRow';
-import { SentRequestTile } from '@/components/messages/SentRequestTile';
 import { LikedYouPlaceholder } from '@/components/messages/LikedYouPlaceholder';
 import {
   getMessagesHome,

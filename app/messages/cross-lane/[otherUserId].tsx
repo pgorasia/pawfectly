@@ -35,27 +35,38 @@ export default function CrossLanePendingScreen() {
   const displayName = peerName || 'This person';
 
   const [activeTab, setActiveTab] = useState<TabType>('chat');
-  const [loading, setLoading] = useState(true);
+  const [loadingPending, setLoadingPending] = useState(true);
+  const [loadingProfile, setLoadingProfile] = useState(true);
   const [pending, setPending] = useState<CrossLanePendingDetails | null>(null);
   const [profile, setProfile] = useState<ProfileViewPayload | null>(null);
   const [resolvingChoice, setResolvingChoice] = useState<CrossLaneChoice | null>(null);
 
   const load = useCallback(async () => {
     if (!user?.id || !otherId) return;
-    setLoading(true);
+    setLoadingPending(true);
+    setLoadingProfile(true);
+    setProfile(null);
+
     try {
-      const [pendingRes, profileRes] = await Promise.all([
-        getCrossLanePending(otherId),
-        getProfileView(otherId),
-      ]);
+      const pendingRes = await getCrossLanePending(otherId);
       setPending(pendingRes);
-      setProfile(profileRes);
     } catch (e: any) {
-      console.error('[CrossLanePendingScreen] load failed:', e);
+      console.error('[CrossLanePendingScreen] pending load failed:', e);
+      setPending(null);
       Alert.alert('Error', 'Unable to load this connection right now.');
+      return;
     } finally {
-      setLoading(false);
+      setLoadingPending(false);
     }
+
+    // Profile is optional for rendering the pending message; load it in parallel.
+    getProfileView(otherId)
+      .then((profileRes) => setProfile(profileRes))
+      .catch((e: any) => {
+        console.error('[CrossLanePendingScreen] profile load failed:', e);
+        setProfile(null);
+      })
+      .finally(() => setLoadingProfile(false));
   }, [user?.id, otherId]);
 
   useFocusEffect(
@@ -98,6 +109,9 @@ export default function CrossLanePendingScreen() {
 
   const isChooser = pending?.is_chooser === true;
   const message = pending?.message ?? null;
+  const hoursLeft = pending?.expires_at
+    ? Math.max(0, Math.ceil((new Date(pending.expires_at).getTime() - Date.now()) / (60 * 60 * 1000)))
+    : null;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -137,7 +151,7 @@ export default function CrossLanePendingScreen() {
         </TouchableOpacity>
       </View>
 
-      {loading ? (
+      {loadingPending ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
@@ -147,14 +161,14 @@ export default function CrossLanePendingScreen() {
             <AppText variant="body" style={styles.bannerTitle}>
               {displayName} is open to dating. Choose the way forward.
             </AppText>
-            {!!pending?.expires_at && (
+            {hoursLeft !== null && (
               <AppText variant="caption" style={styles.bannerSubtitle}>
-                Expires {new Date(pending.expires_at).toLocaleString()}
+                Connection will be defaulted to Pals in {hoursLeft} hours.
               </AppText>
             )}
           </View>
 
-          {message?.body ? (
+          {!!message?.body && (
             <View style={[styles.messageBubble, message.sender_id === user?.id ? styles.myBubble : styles.theirBubble]}>
               <AppText
                 variant="caption"
@@ -167,12 +181,6 @@ export default function CrossLanePendingScreen() {
                 style={[styles.messageText, message.sender_id === user?.id && styles.messageTextOnPrimary]}
               >
                 {message.body}
-              </AppText>
-            </View>
-          ) : (
-            <View style={styles.noMessage}>
-              <AppText variant="caption" style={styles.noMessageText}>
-                No message was included.
               </AppText>
             </View>
           )}
@@ -208,13 +216,17 @@ export default function CrossLanePendingScreen() {
         </ScrollView>
       ) : (
         <View style={styles.content}>
-          {profile ? (
+          {loadingProfile ? (
+            <View style={styles.loading}>
+              <ActivityIndicator size="large" color={Colors.primary} />
+            </View>
+          ) : profile ? (
             <ScrollView showsVerticalScrollIndicator={false}>
               <FullProfileView payload={profile} readOnly />
             </ScrollView>
           ) : (
             <View style={styles.noProfile}>
-              <AppText variant="caption" style={styles.noMessageText}>
+              <AppText variant="caption" style={styles.noProfileText}>
                 Profile unavailable.
               </AppText>
             </View>
@@ -335,14 +347,6 @@ const styles = StyleSheet.create({
   messageTextOnPrimary: {
     color: Colors.background,
   },
-  noMessage: {
-    paddingVertical: Spacing.md,
-    alignItems: 'center',
-    marginBottom: Spacing.lg,
-  },
-  noMessageText: {
-    opacity: 0.6,
-  },
   choiceRow: {
     flexDirection: 'row',
     gap: Spacing.md,
@@ -361,6 +365,9 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  noProfileText: {
+    opacity: 0.6,
   },
 });
 
