@@ -40,6 +40,8 @@ export interface SentRequest {
   lane: Lane;
   created_at: string;
   preview: string | null;
+  // Cross-lane pending sent request (no real conversation yet)
+  is_cross_lane_pending?: boolean;
   display_name: string;
   dog_name: string | null;
   hero_storage_path: string | null;

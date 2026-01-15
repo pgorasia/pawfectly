@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { View, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, Modal, ActivityIndicator, Alert, Dimensions } from 'react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withTiming, withSpring, Easing, runOnJS } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Crypto from 'expo-crypto';
@@ -16,11 +15,7 @@ import storage from '@/services/storage/storage';
 import { 
   getFeedPage, 
   submitSwipe, 
-  recordReject,
-  recordSkip,
   sendChatRequest,
-  sendConnectionRequest,
-  undoLastDislike,
   getLanesNeedingRefresh,
   type FeedCursor 
 } from '@/services/feed/feedService';
@@ -37,39 +32,13 @@ const DISLIKE_OUTBOX_KEY = 'dislike_outbox_v1';
 
 // Undo state types
 type Lane = 'pals' | 'match';
-type DislikeAction = 'reject' | 'pass'; // pass == skip
-
-type SwipeEvent = {
-  client_event_id: string;
-  target_id: string;
-  lane: Lane;
-  action: 'reject' | 'skip';
-  created_at_ms: number;
-  commit_after_ms: number; // now + 10s
-  payload: { crossLaneDays?: number; skipDays?: number };
-  snapshot: ProfileViewPayload; // for instant undo
-  retryCount?: number; // track retry attempts
-  lastRetryMs?: number; // last retry timestamp for backoff
-};
-
-type PendingUndo = {
-  eventId: string;
-  action: DislikeAction;
-  lane: Lane;
-  candidateId: string;
-  snapshot: ProfileViewPayload;
-  expiresAtMs: number;
-  timer: NodeJS.Timeout;
-} | null;
 
 // New dislike event system
-type DislikeActionNew = 'reject' | 'skip';
-
 type DislikeEvent = {
   eventId: string;            // uuid
   targetId: string;
   lane: Lane;
-  action: DislikeActionNew;
+  action: 'reject' | 'skip';
   createdAtMs: number;
   commitAfterMs: number;      // now + 10_000
   crossLaneDays?: number;     // reject
@@ -144,50 +113,6 @@ export default function FeedScreen() {
     const index = indexByLane[lane];
     return queue[index] || null;
   }, [queueByLane, indexByLane, lane]);
-
-  // Animation state for card swipes - MUST be defined before animated styles
-  const cardTranslateX = useSharedValue(0);
-  const cardTranslateY = useSharedValue(0);
-  const cardOpacity = useSharedValue(1);
-  const cardScale = useSharedValue(1);
-  const cardRotation = useSharedValue(0); // For curved motion
-  const [isAnimating, setIsAnimating] = useState(false);
-  
-  // Track undo progress (0 to 1, where 1 = time expired) - MUST be defined before animated styles
-  const undoProgress = useSharedValue(0);
-  const undoProgressTimer = useRef<NodeJS.Timeout | null>(null);
-
-  // Animated style for card
-  const cardAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: cardTranslateX.value },
-      { translateY: cardTranslateY.value },
-      { scale: cardScale.value },
-      { rotate: `${cardRotation.value}deg` },
-    ],
-    opacity: cardOpacity.value,
-  }));
-
-  // Animated style for undo progress circle - border disappears clockwise
-  const undoProgressAnimatedStyle = useAnimatedStyle(() => {
-    const progress = undoProgress.value;
-    // Rotate a mask that covers the border (starts from top, rotates clockwise)
-    // The mask covers the border to make it disappear
-    const rotation = -90 + progress * 360;
-    
-    return {
-      transform: [{ rotate: `${rotation}deg` }],
-    };
-  });
-  
-  // Animated style for the border opacity - makes border fade as it disappears
-  const undoBorderOpacityStyle = useAnimatedStyle(() => {
-    const progress = undoProgress.value;
-    // Border opacity decreases as progress increases
-    return {
-      opacity: 1 - progress * 0.5, // Fade out gradually
-    };
-  });
   
   // UI state
   const [loading, setLoading] = useState(true);
@@ -204,17 +129,13 @@ export default function FeedScreen() {
   const [likeSource, setLikeSource] = useState<{ type: 'photo' | 'prompt'; refId: string } | null>(null);
   const [hasScrolledPastHero, setHasScrolledPastHero] = useState(false);
   
-  // Undo state (legacy - kept for backward compatibility)
-  const [lastAction, setLastAction] = useState<'pass' | 'reject' | null>(null);
-  const [lastCandidateId, setLastCandidateId] = useState<string | null>(null);
-  
-  // Local undo state with 10s grace period
-  const [pendingUndo, setPendingUndo] = useState<PendingUndo>(null);
-  const [outbox, setOutbox] = useState<SwipeEvent[]>([]);
-  
   // New dislike event system (in-memory)
   const [pendingUndoNew, setPendingUndoNew] = useState<DislikeEvent | null>(null);
   const [dislikeOutbox, setDislikeOutbox] = useState<DislikeEvent[]>([]);
+
+  // Undo countdown UI (no animation)
+  const [undoSecondsLeft, setUndoSecondsLeft] = useState<number | null>(null);
+  const undoCountdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Persist dislikeOutbox to storage whenever it changes
   useEffect(() => {
@@ -282,7 +203,7 @@ export default function FeedScreen() {
       prevPreferencesRef.current = currentPrefsStr;
       lastRefreshTime.current = Date.now();
     }
-  }, [me.preferencesRaw, me.preferences, user?.id, loading, refreshBothLanes]);
+  }, [me.preferencesRaw, me.preferences, user?.id, loading]);
   
   // NetInfo: flush events when network returns
   useEffect(() => {
@@ -299,35 +220,13 @@ export default function FeedScreen() {
     };
   }, [dislikeOutbox.length]);
   
-  // Derived: locally suppressed IDs (from outbox and pendingUndo)
-  const locallySuppressedIds = useMemo(() => {
+  // Keep a ref of suppressed IDs so `loadFeedPage` can filter without taking these as dependencies
+  useEffect(() => {
     const suppressed = new Set<string>();
-    
-    // Add IDs from outbox
-    outbox.forEach((event) => {
-      suppressed.add(event.target_id);
-    });
-    
-    // Add ID from pendingUndo if it exists
-    if (pendingUndo) {
-      suppressed.add(pendingUndo.candidateId);
-    }
-    
-    return suppressed;
-  }, [outbox, pendingUndo]);
-
-  // Helper: check if an ID is locally suppressed (in outbox or pendingUndo)
-  const isLocallySuppressed = useCallback(
-    (id: string) => {
-      return (
-        outbox.some((e) => e.target_id === id) ||
-        pendingUndo?.candidateId === id ||
-        dislikeOutbox.some((e) => e.targetId === id) ||
-        pendingUndoNew?.targetId === id
-      );
-    },
-    [outbox, pendingUndo, dislikeOutbox, pendingUndoNew]
-  );
+    dislikeOutbox.forEach((e) => suppressed.add(e.targetId));
+    if (pendingUndoNew?.targetId) suppressed.add(pendingUndoNew.targetId);
+    suppressedIdsRef.current = suppressed;
+  }, [dislikeOutbox, pendingUndoNew]);
   
   // Track last focus time to avoid refreshing too frequently
   const lastRefreshTime = useRef<number>(0);
@@ -340,6 +239,9 @@ export default function FeedScreen() {
     queueLength: 0,
     hasPendingUndo: false,
   });
+
+  // Track IDs suppressed locally (pending undo/outbox) so refetches can't resurrect them
+  const suppressedIdsRef = useRef<Set<string>>(new Set());
   
   // Track previous preferences to detect changes (including filters)
   const prevPreferencesRef = useRef<string | null>(null);
@@ -352,19 +254,35 @@ export default function FeedScreen() {
       console.log('[FeedScreen] loadFeedPage start:', { targetLane, cursor, append });
 
       try {
-        const result = await getFeedPage(10, cursor, targetLane);
+        // Fetch a page, filtering out any locally-suppressed IDs so they can't reappear
+        // while an undo window is active (or events are pending commit).
+        let result = await getFeedPage(10, cursor, targetLane);
+        let filteredProfiles = result.profiles.filter(
+          (p) => !suppressedIdsRef.current.has(p.candidate.user_id)
+        );
+
+        // If this page is fully suppressed and there's more to fetch, try a couple more pages
+        // to avoid flashing an old profile on top.
+        let attempts = 0;
+        while (filteredProfiles.length === 0 && result.nextCursor && attempts < 3) {
+          attempts += 1;
+          result = await getFeedPage(10, result.nextCursor, targetLane);
+          filteredProfiles = result.profiles.filter(
+            (p) => !suppressedIdsRef.current.has(p.candidate.user_id)
+          );
+        }
 
         // Update the specific lane's state
         if (append) {
           setQueueByLane((prev) => ({
             ...prev,
-            [targetLane]: [...prev[targetLane], ...result.profiles],
+            [targetLane]: [...prev[targetLane], ...filteredProfiles],
           }));
           // Don't reset index when appending
         } else {
           setQueueByLane((prev) => ({
             ...prev,
-            [targetLane]: result.profiles,
+            [targetLane]: filteredProfiles,
           }));
           // Reset index to 0 when not appending (new fetch)
           setIndexByLane((prev) => ({ ...prev, [targetLane]: 0 }));
@@ -375,13 +293,13 @@ export default function FeedScreen() {
           [targetLane]: result.nextCursor,
         }));
         
-        // If server returns empty, mark this lane as exhausted
+        // If server has no more and we have nothing to show, mark lane exhausted
         setExhaustedByLane((prev) => ({
           ...prev,
-          [targetLane]: result.profiles.length === 0,
+          [targetLane]: filteredProfiles.length === 0 && result.nextCursor === null,
         }));
         
-        console.log('[FeedScreen] loadFeedPage success:', { targetLane, profilesCount: result.profiles.length });
+        console.log('[FeedScreen] loadFeedPage success:', { targetLane, profilesCount: filteredProfiles.length });
       } catch (error) {
         console.error('[FeedScreen] loadFeedPage error:', error);
       } finally {
@@ -418,6 +336,10 @@ export default function FeedScreen() {
         const now = Date.now();
         
         if (!user?.id || loading) return;
+
+        // Never refresh/reload while an undo window is active; it can resurrect
+        // the just-skipped profile since the server won't see it until commit.
+        if (queueStateRef.current.hasPendingUndo) return;
         
         // Check if specific lanes need refresh (after reset)
         const lanesToRefresh = await getLanesNeedingRefresh();
@@ -458,66 +380,57 @@ export default function FeedScreen() {
       };
       
       checkAndRefresh();
-    }, [user?.id, loading, lane, loadFeedPage, refreshFeed, me.preferencesRaw])
+    }, [user?.id, loading, lane, loadFeedPage, me.preferencesRaw])
   );
 
   // Current profile is now derived from queue[index] - no separate state needed
   // Position is preserved per lane via indexByLane
 
-  // Cleanup pendingUndo timer on unmount or when pendingUndo changes
+  // Track whether an undo window is active (used to avoid refresh-on-focus glitches)
   useEffect(() => {
-    // Update ref when pendingUndo changes (old system)
-    queueStateRef.current.hasPendingUndo = !!pendingUndo || !!pendingUndoNew;
-    
-    return () => {
-      if (pendingUndo?.timer) {
-        clearTimeout(pendingUndo.timer);
-      }
-    };
-  }, [pendingUndo, pendingUndoNew]);
+    queueStateRef.current.hasPendingUndo = !!pendingUndoNew;
+  }, [pendingUndoNew]);
 
-  // Auto-expire pendingUndoNew after 10 seconds and update progress
+  // Auto-expire pendingUndoNew after grace period (no animation)
   useEffect(() => {
     if (!pendingUndoNew) {
-      undoProgress.value = 0;
-      if (undoProgressTimer.current) {
-        clearInterval(undoProgressTimer.current);
-        undoProgressTimer.current = null;
+      setUndoSecondsLeft(null);
+      if (undoCountdownIntervalRef.current) {
+        clearInterval(undoCountdownIntervalRef.current);
+        undoCountdownIntervalRef.current = null;
       }
       return;
     }
 
-    const startTime = Date.now();
-    const duration = 10_000; // 10 seconds
-    
-    // Update progress every 50ms for smooth animation
-    undoProgressTimer.current = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-      undoProgress.value = progress;
-      
-      if (progress >= 1) {
-        if (undoProgressTimer.current) {
-          clearInterval(undoProgressTimer.current);
-          undoProgressTimer.current = null;
-        }
-      }
-    }, 50);
+    const eventId = pendingUndoNew.eventId;
+    const updateSecondsLeft = () => {
+      const remainingMs = pendingUndoNew.commitAfterMs - Date.now();
+      const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+      setUndoSecondsLeft(seconds);
+    };
+    updateSecondsLeft();
 
+    undoCountdownIntervalRef.current = setInterval(updateSecondsLeft, 250);
+
+    const remainingMs = Math.max(0, pendingUndoNew.commitAfterMs - Date.now());
     const timer = setTimeout(() => {
       console.log('[FeedScreen] Undo grace period expired, clearing pendingUndo');
-      setPendingUndoNew(null);
-      undoProgress.value = 0;
-    }, duration);
+      setPendingUndoNew((cur) => {
+        const next = cur?.eventId === eventId ? null : cur;
+        queueStateRef.current.hasPendingUndo = !!next;
+        return next;
+      });
+      setUndoSecondsLeft(null);
+    }, remainingMs);
 
     return () => {
       clearTimeout(timer);
-      if (undoProgressTimer.current) {
-        clearInterval(undoProgressTimer.current);
-        undoProgressTimer.current = null;
+      if (undoCountdownIntervalRef.current) {
+        clearInterval(undoCountdownIntervalRef.current);
+        undoCountdownIntervalRef.current = null;
       }
     };
-  }, [pendingUndoNew, undoProgress]);
+  }, [pendingUndoNew]);
 
   // Cleanup empty state timeout on unmount
   useEffect(() => {
@@ -528,106 +441,6 @@ export default function FeedScreen() {
       }
     };
   }, []);
-
-  // Background commit loop: process outbox events every ~1 second
-  useEffect(() => {
-    if (!user?.id) return;
-
-    const commitInterval = setInterval(async () => {
-      const now = Date.now();
-      
-      // Find events ready to commit (commit_after_ms <= now)
-      // Also check retry backoff: if lastRetryMs exists, wait 5s between retries
-      const readyEvents = outbox.filter((event) => {
-        if (event.commit_after_ms > now) {
-          return false; // Not ready yet
-        }
-        
-        // If this event has been retried, check backoff
-        if (event.lastRetryMs !== undefined) {
-          const timeSinceLastRetry = now - event.lastRetryMs;
-          if (timeSinceLastRetry < 5000) {
-            return false; // Still in backoff period
-          }
-        }
-        
-        return true;
-      });
-
-      if (readyEvents.length === 0) {
-        return; // Nothing to commit
-      }
-
-      // Process events one-by-one (non-blocking)
-      for (const event of readyEvents) {
-        try {
-          let result: { ok: boolean; error?: string };
-
-          if (event.action === 'reject') {
-            result = await recordReject(
-              event.target_id,
-              event.lane,
-              event.payload.crossLaneDays ?? 30
-            );
-          } else if (event.action === 'skip') {
-            result = await recordSkip(
-              event.target_id,
-              event.lane,
-              event.payload.skipDays ?? 7
-            );
-          } else {
-            console.warn('[FeedScreen] Unknown event action:', event.action);
-            continue;
-          }
-
-          if (result.ok) {
-            // Success: remove from outbox
-            setOutbox((prev) => prev.filter((e) => e.client_event_id !== event.client_event_id));
-          } else {
-            // Failure: update retry info
-            const retryCount = (event.retryCount ?? 0) + 1;
-            setOutbox((prev) =>
-              prev.map((e) =>
-                e.client_event_id === event.client_event_id
-                  ? {
-                      ...e,
-                      retryCount,
-                      lastRetryMs: now,
-                    }
-                  : e
-              )
-            );
-            console.warn(
-              `[FeedScreen] Failed to commit event ${event.client_event_id}, retry ${retryCount}:`,
-              result.error
-            );
-          }
-        } catch (error) {
-          // Network or other error: update retry info
-          const retryCount = (event.retryCount ?? 0) + 1;
-          setOutbox((prev) =>
-            prev.map((e) =>
-              e.client_event_id === event.client_event_id
-                ? {
-                    ...e,
-                    retryCount,
-                    lastRetryMs: now,
-                  }
-                : e
-            )
-          );
-          console.error(
-            `[FeedScreen] Error committing event ${event.client_event_id}, retry ${retryCount}:`,
-            error
-          );
-        }
-      }
-    }, 1000); // Run every ~1 second
-
-    return () => {
-      clearInterval(commitInterval);
-    };
-  }, [user?.id, outbox]);
 
   // Background commit loop for dislike events: process dislikeOutbox every ~1 second (batched)
   useEffect(() => {
@@ -886,145 +699,61 @@ export default function FeedScreen() {
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
   }, [lane, queueByLane, indexByLane, cursorByLane, loadFeedPage]);
 
-  // Animation helper to trigger swipe animation
-  const animateSwipe = useCallback((direction: 'left' | 'right' | 'up', onComplete: () => void) => {
-    setIsAnimating(true);
-    const screenWidth = Dimensions.get('window').width;
-    const screenHeight = Dimensions.get('window').height;
-    const ANIMATION_DURATION = 500; // Slower animation (was 300)
-    
-    if (direction === 'left') {
-      // Swipe left (Pass) - curved motion like circular arc
-      cardTranslateX.value = withTiming(-screenWidth * 1.5, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      });
-      // Add slight upward curve and rotation for circular motion
-      cardTranslateY.value = withTiming(-screenHeight * 0.2, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      });
-      cardRotation.value = withTiming(-30, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      }, () => {
-        runOnJS(onComplete)();
-      });
-      cardOpacity.value = withTiming(0, { duration: ANIMATION_DURATION });
-    } else if (direction === 'right') {
-      // Swipe right (Like) - curved motion like circular arc
-      cardTranslateX.value = withTiming(screenWidth * 1.5, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      });
-      // Add slight upward curve and rotation for circular motion
-      cardTranslateY.value = withTiming(-screenHeight * 0.2, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      });
-      cardRotation.value = withTiming(30, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      }, () => {
-        runOnJS(onComplete)();
-      });
-      cardOpacity.value = withTiming(0, { duration: ANIMATION_DURATION });
-    } else if (direction === 'up') {
-      // Swipe up (Skip)
-      cardTranslateY.value = withTiming(-screenHeight * 1.5, {
-        duration: ANIMATION_DURATION,
-        easing: Easing.out(Easing.cubic),
-      }, () => {
-        runOnJS(onComplete)();
-      });
-      cardOpacity.value = withTiming(0, { duration: ANIMATION_DURATION });
-    }
-  }, [cardTranslateX, cardTranslateY, cardOpacity, cardRotation]);
-
-  // Reset animation state
-  const resetCardAnimation = useCallback(() => {
-    cardTranslateX.value = 0;
-    cardTranslateY.value = 0;
-    cardOpacity.value = 1;
-    cardScale.value = 1;
-    cardRotation.value = 0;
-    setIsAnimating(false);
-  }, [cardTranslateX, cardTranslateY, cardOpacity, cardScale, cardRotation]);
-
   // Handle swipe actions
   const handleSwipe = useCallback(async (action: 'reject' | 'pass' | 'accept') => {
-    if (!user?.id || !currentProfile || swiping || isAnimating) return;
+    if (!user?.id || !currentProfile || swiping) return;
 
     const candidateId = currentProfile.candidate.user_id;
     setSwiping(true);
 
     try {
       if (action === 'reject' || action === 'pass') {
-        // Trigger animation
-        const animationDirection = action === 'reject' ? 'left' : 'up';
-        animateSwipe(animationDirection, () => {
-          // After animation completes, do the actual swipe logic
-          const currentLane = lane;
-          const now = Date.now();
-          const eventId = Crypto.randomUUID();
+        const currentLane = lane;
+        const now = Date.now();
+        const eventId = Crypto.randomUUID();
 
-          const event: DislikeEvent = {
-            eventId,
-            targetId: candidateId,
-            lane: currentLane,
-            action: action === 'reject' ? 'reject' : 'skip',
-            createdAtMs: now,
-            commitAfterMs: now + 10_000,
-            ...(action === 'reject' ? { crossLaneDays: 30 } : { skipDays: 7 }),
-            snapshot: currentProfile,
-          };
+        const event: DislikeEvent = {
+          eventId,
+          targetId: candidateId,
+          lane: currentLane,
+          action: action === 'reject' ? 'reject' : 'skip',
+          createdAtMs: now,
+          commitAfterMs: now + 10_000,
+          ...(action === 'reject' ? { crossLaneDays: 30 } : { skipDays: 7 }),
+          snapshot: currentProfile,
+        };
 
-          // Push event to dislikeOutbox
-          setDislikeOutbox((prev) => [...prev, event]);
+        // Push event to dislikeOutbox
+        setDislikeOutbox((prev) => [...prev, event]);
 
-          // Set pendingUndo
-          setPendingUndoNew(event);
+        // Set pendingUndo (single-slot reserve)
+        setPendingUndoNew(event);
+        queueStateRef.current.hasPendingUndo = true;
 
-          // Update legacy undo state for UI compatibility
-          setLastAction(action === 'reject' ? 'reject' : 'pass');
-          setLastCandidateId(candidateId);
-
-          // Advance immediately (optimistic)
-          advanceToNext();
-          resetCardAnimation();
-          setSwiping(false);
-        });
+        // Advance immediately (no animation) to avoid stale-card-on-return glitches
+        advanceToNext();
         return;
       } else if (action === 'accept') {
-        // Trigger swipe right animation
-        animateSwipe('right', async () => {
-          const result = await submitSwipe(candidateId, 'accept', lane);
+        const result = await submitSwipe(candidateId, 'accept', lane);
 
-          if (result.ok) {
-            if (result.remaining_accepts !== undefined) {
-              setRemainingAccepts(result.remaining_accepts);
-            }
-            // Clear undo state for accept/like actions
-            setLastAction(null);
-            setLastCandidateId(null);
-            advanceToNext();
-            resetCardAnimation();
-          } else if (result.error === 'daily_limit_reached') {
-            setShowPremiumModal(true);
-            resetCardAnimation();
-            // Don't advance - keep current profile
+        if (result.ok) {
+          if (result.remaining_accepts !== undefined) {
+            setRemainingAccepts(result.remaining_accepts);
           }
-          setSwiping(false);
-        });
+          advanceToNext();
+        } else if (result.error === 'daily_limit_reached') {
+          setShowPremiumModal(true);
+          // Don't advance - keep current profile
+        }
         return;
       }
     } catch (error) {
       console.error('[FeedScreen] Failed to submit swipe:', error);
       Alert.alert('Error', 'Failed to submit swipe. Please try again.');
-      resetCardAnimation();
+    } finally {
       setSwiping(false);
     }
-  }, [user?.id, currentProfile, swiping, isAnimating, lane, animateSwipe, resetCardAnimation, advanceToNext]);
+  }, [user?.id, currentProfile, swiping, lane, advanceToNext]);
 
   // Handle heart press (like from photo/prompt)
   const handleHeartPress = useCallback((source: { type: 'photo' | 'prompt'; refId: string }) => {
@@ -1057,6 +786,22 @@ export default function FeedScreen() {
         message || '', // Empty string if no message
         metadata
       );
+
+
+      // Cross-lane pending: the like is recorded, but a conversation/message is not created.
+      // The match-liker should wait for the pals-liker to choose a lane.
+      if (result.cross_lane_pending) {
+        if (result.remaining_accepts !== undefined) {
+          setRemainingAccepts(result.remaining_accepts);
+        }
+
+        advanceToNext();
+        Alert.alert(
+          'Pending connection',
+          "Your like was sent, but this connection is pending the other person’s lane choice. Your message was not sent."
+        );
+        return;
+      }
 
       if (!result.ok) {
         if (result.error === 'daily_limit_reached') {
@@ -1192,11 +937,6 @@ export default function FeedScreen() {
     const currentIndex = indexByLane[undoLane];
     const currentProfileAtIndex = currentQueue[currentIndex] || null;
     
-    // Start with card off-screen to the left, then animate it in
-    const screenWidth = Dimensions.get('window').width;
-    cardTranslateX.value = -screenWidth * 1.5;
-    cardOpacity.value = 0;
-    
     setQueueByLane((prev) => {
       const queue = prev[undoLane];
       
@@ -1225,29 +965,10 @@ export default function FeedScreen() {
     // Clear pendingUndo
     setPendingUndoNew(null);
 
-    // Update legacy undo state for UI compatibility
-    setLastAction(null);
-    setLastCandidateId(null);
-
     // Reset scroll state
     setHasScrolledPastHero(false);
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-
-    // Animate card coming back from left (reverse swipe)
-    cardTranslateX.value = withSpring(0, {
-      damping: 15,
-      stiffness: 150,
-    });
-    cardOpacity.value = withTiming(1, { duration: 500 });
-    cardTranslateY.value = withSpring(0, {
-      damping: 15,
-      stiffness: 150,
-    });
-    cardRotation.value = withSpring(0, {
-      damping: 15,
-      stiffness: 150,
-    });
-  }, [pendingUndoNew, queueByLane, indexByLane, cardTranslateX, cardOpacity, cardTranslateY, cardRotation]);
+  }, [pendingUndoNew, queueByLane, indexByLane]);
 
   if (loading) {
     return (
@@ -1277,23 +998,13 @@ export default function FeedScreen() {
               onPress={handleUndo}
               disabled={swiping}
             >
-              <View style={styles.undoButtonContainer}>
-                {/* Undo icon - stays intact */}
-                <MaterialIcons name="undo" size={20} color={Colors.primary} style={styles.undoIcon} />
-                {/* Circular border that disappears with countdown */}
-                <Animated.View 
-                  style={[
-                    styles.undoProgressCircle,
-                    undoBorderOpacityStyle,
-                  ]}
-                />
-                {/* Rotating overlay that covers the border progressively (only border, not center) */}
-                <Animated.View 
-                  style={[
-                    styles.undoProgressOverlay,
-                    undoProgressAnimatedStyle,
-                  ]}
-                />
+              <View style={styles.undoButtonSimple}>
+                <MaterialIcons name="undo" size={20} color={Colors.primary} />
+                {undoSecondsLeft !== null && (
+                  <AppText variant="caption" style={styles.undoSecondsText}>
+                    {undoSecondsLeft}s
+                  </AppText>
+                )}
               </View>
             </TouchableOpacity>
           )}
@@ -1306,7 +1017,7 @@ export default function FeedScreen() {
         </View>
       </View>
 
-      {/* Lane Segmented Control - only show if both lanes are enabled */}
+      {/* Lane toggle - only show if both lanes are enabled */}
       {(() => {
         const shouldShowTabs = visibleTabs.length === 2;
         console.log('[FeedScreen] 🎨 Rendering segmented control:', {
@@ -1316,32 +1027,22 @@ export default function FeedScreen() {
           willRenderSegmentedControl: shouldShowTabs,
         });
         return shouldShowTabs ? (
-          <View style={styles.segmentedControl}>
+          <View style={styles.laneToggleContainer}>
             <TouchableOpacity
-              style={[styles.segment, lane === 'pals' && styles.segmentActive]}
-              onPress={() => handleLaneSwitch('pals')}
+              style={styles.laneToggleButton}
+              onPress={() => handleLaneSwitch(lane === 'pals' ? 'match' : 'pals')}
               disabled={loading}
               activeOpacity={0.7}
             >
-              <AppText
-                variant="body"
-                style={[styles.segmentText, lane === 'pals' && styles.segmentTextActive]}
-              >
-                Pawsome Pals
+              <AppText variant="body" style={styles.laneToggleText}>
+                {lane === 'pals' ? 'Pawsome Pals' : 'Pawfect Match'}
               </AppText>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.segment, lane === 'match' && styles.segmentActive]}
-              onPress={() => handleLaneSwitch('match')}
-              disabled={loading}
-              activeOpacity={0.7}
-            >
-              <AppText
-                variant="body"
-                style={[styles.segmentText, lane === 'match' && styles.segmentTextActive]}
-              >
-                Pawfect Match
-              </AppText>
+              <View style={styles.laneToggleRight}>
+                <AppText variant="caption" style={styles.laneToggleHint}>
+                  Switch
+                </AppText>
+                <MaterialIcons name="swap-horiz" size={18} color={Colors.text} />
+              </View>
             </TouchableOpacity>
           </View>
         ) : null;
@@ -1351,7 +1052,7 @@ export default function FeedScreen() {
       {isProfileHidden === true && (
         <View style={styles.hiddenBanner}>
           <AppText variant="body" style={styles.hiddenBannerText}>
-            Your profile is hidden. You won't appear in the feed.
+            Your profile is hidden. You won’t appear in the feed.
           </AppText>
           <AppButton
             variant="primary"
@@ -1366,12 +1067,7 @@ export default function FeedScreen() {
       {/* Profile Content */}
       <View style={styles.contentContainer}>
         {hasProfile ? (
-          <Animated.View
-            style={[
-              styles.cardContainer,
-              cardAnimatedStyle,
-            ]}
-          >
+          <View style={styles.cardContainer}>
             <ScrollView
               ref={scrollViewRef}
               style={styles.scrollView}
@@ -1397,7 +1093,7 @@ export default function FeedScreen() {
                 onMorePress={() => setShowBlockMenu(true)}
               />
             </ScrollView>
-          </Animated.View>
+          </View>
         ) : exhaustedByLane[lane] && queueByLane[lane].length === 0 ? (
           // Empty state for both lanes
           <View style={styles.emptyContainer}>
@@ -1529,7 +1225,7 @@ export default function FeedScreen() {
               Daily Limit Reached
             </AppText>
             <AppText variant="body" style={styles.modalText}>
-              You've used all your free likes for today. Upgrade to Premium for unlimited likes!
+              You’ve used all your free likes for today. Upgrade to Premium for unlimited likes!
             </AppText>
             <View style={styles.modalButtons}>
               <AppButton
@@ -1586,34 +1282,34 @@ const styles = StyleSheet.create({
   headerButton: {
     padding: Spacing.sm,
   },
-  segmentedControl: {
-    flexDirection: 'row',
-    backgroundColor: Colors.background + '80', // Subtle background
-    borderRadius: 12,
-    padding: 4,
+  laneToggleContainer: {
     marginHorizontal: Spacing.lg,
     marginTop: Spacing.sm,
     marginBottom: Spacing.xs,
   },
-  segment: {
-    flex: 1,
+  laneToggleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Colors.background + '80',
+    borderRadius: 12,
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(31, 41, 55, 0.1)',
   },
-  segmentActive: {
-    backgroundColor: Colors.primary,
-  },
-  segmentText: {
+  laneToggleText: {
     fontSize: 15,
-    fontWeight: '500',
-    color: Colors.text + '80', // Semi-transparent when inactive
-  },
-  segmentTextActive: {
-    color: Colors.background,
     fontWeight: '600',
+    color: Colors.text,
+  },
+  laneToggleRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  laneToggleHint: {
+    opacity: 0.7,
   },
   loadingContainer: {
     flex: 1,
@@ -1637,40 +1333,21 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
   },
-  undoButtonContainer: {
-    width: 36,
-    height: 36,
-    justifyContent: 'center',
+  undoButtonSimple: {
+    flexDirection: 'row',
     alignItems: 'center',
-    position: 'relative',
-  },
-  undoProgressCircle: {
-    position: 'absolute',
-    width: 36,
-    height: 36,
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     borderRadius: 18,
-    borderWidth: 2.5,
-    borderColor: Colors.primary,
-  },
-  undoProgressOverlay: {
-    position: 'absolute',
-    // Half-circle that rotates to cover the border progressively
-    // Positioned to only cover the border area, not the center icon
-    width: 19,
-    height: 36,
+    borderWidth: 1,
+    borderColor: Colors.primary + '55',
     backgroundColor: Colors.background,
-    // Start from right edge (12 o'clock position after -90deg rotation)
-    left: 18,
-    top: 0,
-    borderTopRightRadius: 18,
-    borderBottomRightRadius: 18,
-    // Ensure it's above the border but below the icon
-    zIndex: 1,
   },
-  undoIcon: {
-    // Ensure icon is on top of everything
-    zIndex: 2,
-    position: 'relative',
+  undoSecondsText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.primary,
   },
   emptyContainer: {
     flex: 1,

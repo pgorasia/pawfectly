@@ -21,8 +21,6 @@ import {
   RefreshControl,
   ActivityIndicator,
   Alert,
-  Modal,
-  Pressable,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
@@ -48,7 +46,6 @@ import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
 import { chatEvents, CHAT_EVENTS, type FirstMessageSentData, type ConversationClosedData, type CrossLaneResolvedData } from '@/utils/chatEvents';
 import { truncatePreview } from '@/utils/chatHelpers';
-import { resolveCrossLaneConnection, type CrossLaneChoice } from '@/services/messages/crossLaneService';
 
 type LaneFilter = 'all' | 'pals' | 'match';
 type TabType = 'messages' | 'requests';
@@ -78,11 +75,6 @@ export default function MessagesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Cross-lane pending choice modal (shown from Matches row)
-  const [choiceModalVisible, setChoiceModalVisible] = useState(false);
-  const [selectedPending, setSelectedPending] = useState<Match | null>(null);
-  const [resolvingChoice, setResolvingChoice] = useState<CrossLaneChoice | null>(null);
 
   // Cache with useRef for stale-while-revalidate pattern
   const cacheRef = useRef<CachedData>({
@@ -439,9 +431,17 @@ export default function MessagesScreen() {
    */
   const handleMatchPress = async (match: Match) => {
     try {
-      // Cross-lane pending: show choice modal (do not create conversation yet)
+      // Cross-lane pending: open dedicated cross-lane screen (do not create conversation yet)
       if (match.requires_lane_choice) {
-        openChoiceModal(match);
+        router.push({
+          pathname: '/messages/cross-lane/[otherUserId]',
+          params: {
+            otherUserId: match.user_id,
+            peerName: match.display_name,
+            peerPhotoPath: match.hero_storage_path || '',
+            peerUserId: match.user_id,
+          },
+        });
         return;
       }
 
@@ -488,8 +488,28 @@ export default function MessagesScreen() {
   };
 
   const handleThreadPress = (item: Thread | SentRequest | IncomingRequest) => {
+    // Cross-lane pending "sent request" uses a non-UUID conversation_id.
+    // Route to the cross-lane screen instead of the normal chat thread.
+    const isCrossLanePending =
+      (item as any)?.is_cross_lane_pending === true ||
+      String(item.conversation_id || '').startsWith('cross_lane_pending:');
+
+    if (isCrossLanePending) {
+      router.push({
+        pathname: '/messages/cross-lane/[otherUserId]',
+        params: {
+          otherUserId: item.user_id,
+          peerName: item.display_name,
+          peerPhotoPath: item.hero_storage_path || '',
+          peerUserId: item.user_id,
+        },
+      });
+      return;
+    }
+
     // Check if this is a sent request by checking if it exists in sent_requests
-    const isSentRequest = messagesHome?.sent_requests?.some(sr => sr.conversation_id === item.conversation_id) ?? false;
+    const isSentRequest =
+      messagesHome?.sent_requests?.some(sr => sr.conversation_id === item.conversation_id) ?? false;
     
     router.push({
       pathname: '/messages/[conversationId]',
@@ -521,39 +541,6 @@ export default function MessagesScreen() {
     // Navigate to Liked You tab
     router.push('/liked-you');
   };
-
-  // ---------------- CROSS-LANE CHOICE (FROM MATCHES ROW) ----------------
-  const openChoiceModal = useCallback((match: Match) => {
-    setSelectedPending(match);
-    setChoiceModalVisible(true);
-  }, []);
-
-  const closeChoiceModal = useCallback(() => {
-    if (resolvingChoice) return;
-    setChoiceModalVisible(false);
-    setSelectedPending(null);
-  }, [resolvingChoice]);
-
-  const handleResolveChoice = useCallback(async (selectedLane: CrossLaneChoice) => {
-    if (!selectedPending) return;
-    setResolvingChoice(selectedLane);
-    try {
-      const res = await resolveCrossLaneConnection(selectedPending.user_id, selectedLane);
-      if (!res?.ok) {
-        throw new Error(res?.error || 'unknown_error');
-      }
-
-      // Refresh home so the pending tile disappears and the new thread appears.
-      await loadData(false);
-      chatEvents.emit(CHAT_EVENTS.CROSS_LANE_RESOLVED, { otherUserId: selectedPending.user_id });
-      closeChoiceModal();
-    } catch (e: any) {
-      console.error('[MessagesScreen] Failed to resolve cross-lane:', e);
-      Alert.alert('Something went wrong', 'Unable to resolve this connection right now. Please try again.');
-    } finally {
-      setResolvingChoice(null);
-    }
-  }, [selectedPending, loadData, closeChoiceModal]);
 
   /**
    * Segmented control for lane filter
@@ -782,7 +769,6 @@ export default function MessagesScreen() {
                   request={{
                     ...item,
                     display_name: item.display_name,
-                    preview: 'Pending...',
                   }}
                   onPress={() => handleThreadPress(item)}
                 />
@@ -863,53 +849,6 @@ export default function MessagesScreen() {
         </ScrollView>
       )}
 
-      {/* Cross-lane choice modal (triggered from pending '?' match tile) */}
-      <Modal
-        visible={choiceModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeChoiceModal}
-      >
-        <Pressable style={styles.modalOverlay} onPress={closeChoiceModal}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
-            <AppText variant="heading" style={styles.modalTitle}>
-              {(selectedPending?.display_name ?? 'This person')}
-              {' is open to dating. We will let you choose the way forward.'}
-            </AppText>
-
-            <View style={styles.modalButtons}>
-              <AppButton
-                variant="outline"
-                onPress={() => handleResolveChoice('pals')}
-                loading={resolvingChoice === 'pals'}
-                disabled={!!resolvingChoice}
-                style={[styles.modalButton, styles.modalButtonLeft]}
-              >
-                Pals
-              </AppButton>
-
-              <AppButton
-                variant="primary"
-                onPress={() => handleResolveChoice('match')}
-                loading={resolvingChoice === 'match'}
-                disabled={!!resolvingChoice}
-                style={styles.modalButton}
-              >
-                Match
-              </AppButton>
-            </View>
-
-            <AppButton
-              variant="ghost"
-              onPress={closeChoiceModal}
-              disabled={!!resolvingChoice}
-              style={styles.modalCancel}
-            >
-              Not now
-            </AppButton>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </ScreenContainer>
   );
 }
@@ -1075,37 +1014,6 @@ const styles = StyleSheet.create({
     color: Colors.background,
     fontSize: 11,
     fontWeight: '700',
-  },
-
-  // Cross-lane choice modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'center',
-    padding: Spacing.lg,
-  },
-  modalCard: {
-    backgroundColor: Colors.cardBackground,
-    borderRadius: 16,
-    padding: Spacing.lg,
-  },
-  modalTitle: {
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: Spacing.sm,
-  },
-  modalButton: {
-    flex: 1,
-  },
-  modalButtonLeft: {
-    marginRight: Spacing.md,
-  },
-  modalCancel: {
-    marginTop: Spacing.xs,
   },
 
   // Empty state

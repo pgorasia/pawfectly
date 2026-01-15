@@ -17,6 +17,26 @@ export interface ResolveCrossLaneResult {
   expires_at?: string;
 }
 
+export type CrossLanePendingMessage = {
+  sender_id: string | null;
+  body: string;
+  metadata: any;
+  created_at: string;
+  client_message_id?: string | null;
+  lane?: CrossLaneChoice | null;
+};
+
+export interface CrossLanePendingDetails {
+  ok: boolean;
+  error?: string;
+  pals_user_id?: string;
+  match_user_id?: string;
+  created_at?: string;
+  expires_at?: string;
+  is_chooser?: boolean;
+  message?: CrossLanePendingMessage | null;
+}
+
 /**
  * Resolve a pending cross-lane connection (chooser only).
  * RPC: public.resolve_cross_lane_connection(p_other_id uuid, p_selected_lane text)
@@ -36,4 +56,21 @@ export async function resolveCrossLaneConnection(
   }
 
   return (data ?? { ok: false, error: 'unknown_error' }) as ResolveCrossLaneResult;
+}
+
+/**
+ * Fetch cross-lane pending details for the dedicated UI screen.
+ * RPC: public.get_cross_lane_pending(p_other_id uuid)
+ */
+export async function getCrossLanePending(otherId: string): Promise<CrossLanePendingDetails> {
+  const { data, error } = await supabase.rpc('get_cross_lane_pending', {
+    p_other_id: otherId,
+  });
+
+  if (error) {
+    console.error('[crossLaneService] get_cross_lane_pending failed:', error);
+    throw new Error(`Failed to load cross-lane pending: ${error.message}`);
+  }
+
+  return (data ?? { ok: false, error: 'unknown_error' }) as CrossLanePendingDetails;
 }

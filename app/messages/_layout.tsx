@@ -29,6 +29,12 @@ export default function MessagesLayout() {
           gestureEnabled: true,
         }}
       />
+      <Stack.Screen
+        name="cross-lane/[otherUserId]"
+        options={{
+          gestureEnabled: true,
+        }}
+      />
     </Stack>
   );
 }

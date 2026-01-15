@@ -490,7 +490,14 @@ export async function sendChatRequest(
   body: string,
   metadata?: Record<string, any>,
   clientMessageId?: string
-): Promise<{ ok: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number }> {
+): Promise<{
+  ok: boolean;
+  remaining_accepts?: number | null;
+  error?: string;
+  limit?: number;
+  used?: number;
+  cross_lane_pending?: boolean;
+}> {
   // Generate client message ID if not provided
   const finalClientMessageId = clientMessageId || generateClientMessageId();
 
@@ -546,7 +553,18 @@ export async function sendChatRequest(
 
   // Check if response indicates success
   const result = data as { ok?: boolean; remaining_accepts?: number | null; error?: string; limit?: number; used?: number } | null;
-  
+
+  // Cross-lane pending is a valid outcome: like is recorded, but no conversation/message is created.
+  // The match-liker should not see anything yet; we treat this as success so the feed can advance.
+  if (result?.error === 'cross_lane_pending') {
+    console.warn('[feedService] send_chat_request cross-lane pending: like recorded, awaiting chooser resolution');
+    return {
+      ok: true,
+      remaining_accepts: result?.remaining_accepts,
+      cross_lane_pending: true,
+    };
+  }
+
   if (result?.error) {
     console.error('[feedService] send_chat_request returned error:', result.error);
     throw new Error(result.error);
