@@ -1,218 +1,315 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Modal, ScrollView, StyleSheet, Switch, TouchableOpacity, View } from 'react-native';
+import { Image } from 'expo-image';
+import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+
 import { ScreenContainer } from '@/components/common/ScreenContainer';
+import { AppButton } from '@/components/ui/AppButton';
 import { AppText } from '@/components/ui/AppText';
+import { Card } from '@/components/ui/Card';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useAuth } from '@/contexts/AuthContext';
-import { useMe } from '@/contexts/MeContext';
-import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
-import MyPackTab from './MyPackTab';
-import OurPhotosTab from './OurPhotosTab';
-import type { BadgeType } from '@/services/badges/badgeService';
+import { Spacing } from '@/constants/spacing';
+import { useMe } from '@/contexts/MeContext';
+import { usePhotoBuckets } from '@/hooks/usePhotoBuckets';
+import { setProfileHidden } from '@/services/profile/statusRepository';
+import { supabase } from '@/services/supabase/supabaseClient';
+import { publicPhotoUrl } from '@/utils/photoUrls';
+import { useMyConsumables } from '@/hooks/useMyConsumables';
+import { MyBadgesInline } from '@/components/account/MyBadges';
 
-type AccountTab = 'pack' | 'photos' | 'badges';
+type AccountHomeTab = 'upgrades' | 'trust_safety';
 
-interface BadgeInfo {
-  type: BadgeType;
-  label: string;
-  description?: string;
-  infoText: string;
+const TERMS_URL = process.env.EXPO_PUBLIC_TERMS_URL || 'https://example.com/terms';
+const PRIVACY_URL = process.env.EXPO_PUBLIC_PRIVACY_URL || 'https://example.com/privacy';
+
+const INSTAGRAM_STORY_GRADIENT = ['#FEDA75', '#FA7E1E', '#D62976', '#962FBF', '#4F5BD5'];
+
+function formatDaysUntilRenewal(days: number) {
+  if (days === 1) return 'Renews in 1 day';
+  return `Renews in ${days} days`;
 }
 
-const BADGE_INFO: Record<BadgeType, BadgeInfo> = {
-  email_verified: {
-    type: 'email_verified',
-    label: 'Email Verified',
-    infoText: 'Your email address has been verified.',
-  },
-  photo_with_dog: {
-    type: 'photo_with_dog',
-    label: 'Photo with Dog',
-    infoText: 'Upload at least one photo where you and your dog are clearly visible.',
-  },
-  selfie_verified: {
-    type: 'selfie_verified',
-    label: 'Selfie Verified',
-    infoText: 'Take a quick selfie that matches one of your profile photos.',
-  },
-};
+function daysUntil(isoTs: string | null) {
+  if (!isoTs) return null;
+  const now = Date.now();
+  const ts = new Date(isoTs).getTime();
+  if (!Number.isFinite(ts)) return null;
+  const diffMs = Math.max(0, ts - now);
+  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+}
 
-function MyBadgesTab() {
-  const router = useRouter();
-  const { me, meLoaded, refreshBadges } = useMe();
-  const [infoModalVisible, setInfoModalVisible] = useState(false);
-  const [selectedBadgeInfo, setSelectedBadgeInfo] = useState<BadgeInfo | null>(null);
-
-  // Use badges from MeContext (cached). If they are missing, refresh once.
-  useEffect(() => {
-    if (meLoaded && (!me.badges || me.badges.length === 0)) {
-      refreshBadges().catch((error) => {
-        console.error('[MyBadgesTab] Failed to refresh badges:', error);
-      });
-    }
-  }, [meLoaded, me.badges, refreshBadges]);
-
-  // Normalize statuses and always render all known badge types (earned or not).
-  const badgeStatusesFromMe = (me.badges || []).map((badge) => ({
-    type: badge.type as BadgeType,
-    earned: badge.earned,
-    earnedAt: badge.earnedAt,
-    metadata: badge.metadata,
-  }));
-
-  const statusesByType = new Map<BadgeType, {
-    type: BadgeType;
-    earned: boolean;
-    earnedAt: string | null;
-    metadata: Record<string, any> | null;
-  }>();
-
-  for (const status of badgeStatusesFromMe) {
-    statusesByType.set(status.type, status);
+async function openLegalUrl(url: string | undefined, title: string) {
+  if (!url) {
+    Alert.alert(title, 'This link is not configured yet.');
+    return;
   }
 
-  const badgeTypes: BadgeType[] = ['email_verified', 'photo_with_dog', 'selfie_verified'];
-
-  const badgeRows = badgeTypes.map((type) => {
-    return (
-      statusesByType.get(type) || {
-        type,
-        earned: type === 'email_verified',
-        earnedAt: null,
-        metadata: null,
-      }
-    );
+  await openBrowserAsync(url, {
+    presentationStyle: WebBrowserPresentationStyle.AUTOMATIC,
   });
+}
 
-  const handleBadgePress = (badgeType: BadgeType, earned: boolean) => {
-    if (earned) {
-      // Completed badges are disabled
-      return;
-    }
+function SectionTitle({ title }: { title: string }) {
+  return (
+    <AppText variant="caption" style={styles.sectionTitle}>
+      {title.toUpperCase()}
+    </AppText>
+  );
+}
 
-    if (badgeType === 'photo_with_dog') {
-      // Navigate to Our Photos tab
-      router.push('/(tabs)/account?tab=photos');
-    } else if (badgeType === 'selfie_verified') {
-      // Start selfie verification flow
-      router.push('/(selfie)/intro');
-    }
-  };
-
-  const handleInfoPress = (badgeType: BadgeType) => {
-    const info = BADGE_INFO[badgeType];
-    if (info) {
-      setSelectedBadgeInfo(info);
-      setInfoModalVisible(true);
-    }
-  };
-
-  // Show loading only if MeContext hasn't loaded yet
-  if (!meLoaded) {
-    return (
-      <View style={styles.loadingContainer}>
-        <AppText variant="body">Loading badges...</AppText>
+function Row({
+  title,
+  subtitle,
+  left,
+  right,
+  onPress,
+  disabled,
+  showChevron = true,
+}: {
+  title: string;
+  subtitle?: string;
+  left?: React.ReactNode;
+  right?: React.ReactNode;
+  onPress?: () => void;
+  disabled?: boolean;
+  showChevron?: boolean;
+}) {
+  const isPressable = !!onPress;
+  return (
+    <TouchableOpacity
+      style={[styles.row, disabled && styles.rowDisabled]}
+      onPress={onPress}
+      disabled={!!disabled}
+      activeOpacity={isPressable ? 0.75 : 1}
+    >
+      <View style={styles.rowLeft}>
+        {left}
+        <View style={styles.rowText}>
+          <AppText variant="body" style={styles.rowTitle}>
+            {title}
+          </AppText>
+          {!!subtitle && (
+            <AppText variant="caption" style={styles.rowSubtitle}>
+              {subtitle}
+            </AppText>
+          )}
+        </View>
       </View>
-    );
-  }
+      <View style={styles.rowRight}>
+        {right}
+        {isPressable && showChevron && (
+          <AppText variant="body" style={styles.rowChevron}>
+            →
+          </AppText>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function ConsumableBadge({ count }: { count: number }) {
+  return (
+    <View style={styles.countBadge}>
+      <AppText variant="caption" style={styles.countBadgeText}>
+        {count}
+      </AppText>
+    </View>
+  );
+}
+
+function UpgradesTab() {
+  const router = useRouter();
+  const { byType } = useMyConsumables();
+
+  const consumables = [
+    {
+      key: 'boost',
+      title: 'Boost',
+      subtitle: `Get more profile views.`,
+      renewText: (() => {
+        const row = byType('boost');
+        const d = daysUntil(row?.renews_at ?? null);
+        return d !== null ? formatDaysUntilRenewal(d) : '';
+      })(),
+      count: byType('boost')?.balance ?? 0,
+      icon: <IconSymbol name="bolt.fill" size={18} color={Colors.primary} />,
+    },
+    {
+      key: 'rewind',
+      title: 'Rewind',
+      subtitle: `Undo your last pass.`,
+      renewText: (() => {
+        const row = byType('rewind');
+        const d = daysUntil(row?.renews_at ?? null);
+        return d !== null ? formatDaysUntilRenewal(d) : '';
+      })(),
+      count: byType('rewind')?.balance ?? 0,
+      icon: <IconSymbol name="arrow.uturn.backward" size={18} color={Colors.primary} />,
+    },
+    {
+      key: 'compliment',
+      title: 'Compliment',
+      subtitle: `Send a message with your like.`,
+      renewText: (() => {
+        const row = byType('compliment');
+        const d = daysUntil(row?.renews_at ?? null);
+        return d !== null ? formatDaysUntilRenewal(d) : '';
+      })(),
+      count: byType('compliment')?.balance ?? 0,
+      icon: <IconSymbol name="sparkles" size={18} color={Colors.primary} />,
+    },
+    {
+      key: 'reset-dislikes',
+      title: 'Reset dislikes',
+      subtitle: `See profiles you passed again.`,
+      renewText: 'Pay per use',
+      count: byType('reset_dislikes')?.balance ?? 0,
+      icon: <IconSymbol name="arrow.counterclockwise" size={18} color={Colors.primary} />,
+    },
+  ] as const;
 
   return (
-    <ScrollView style={styles.tabContent} contentContainerStyle={styles.tabContentContainer}>
-      <View style={styles.section}>
-        {badgeRows.map((badge) => {
-          const info = BADGE_INFO[badge.type];
-          if (!info) return null;
+    <ScrollView
+      style={styles.tabScroll}
+      contentContainerStyle={styles.tabScrollContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <Card style={styles.plusCard}>
+        <View style={styles.plusCardHeader}>
+          <AppText variant="heading" style={styles.plusTitle}>
+            Get more with Pawfectly +
+          </AppText>
+          <AppText variant="body" style={styles.plusSubtitle}>
+            Unlock premium features and get more quality matches.
+          </AppText>
+        </View>
+        <AppButton variant="primary" onPress={() => router.push('/(tabs)/account/plus')}>
+          Upgrade
+        </AppButton>
+      </Card>
 
-          const isCompleted = badge.earned;
-          const showTrophy = badge.type !== 'email_verified' && isCompleted;
-
-          return (
-            <TouchableOpacity
-              key={badge.type}
-              style={[styles.badgeRow, isCompleted && styles.badgeRowDisabled]}
-              onPress={() => handleBadgePress(badge.type, isCompleted)}
-              disabled={isCompleted}
-              activeOpacity={isCompleted ? 1 : 0.7}
-            >
-              {/* Left: Checkbox */}
-              <View style={styles.badgeLeft}>
-                <View style={[styles.checkbox, isCompleted && styles.checkboxChecked]}>
-                  {isCompleted && (
-                    <AppText variant="body" style={styles.checkmark}>
-                      ✓
-                    </AppText>
-                  )}
+      <View style={styles.sectionGroup}>
+        {consumables.map((c) => (
+          <Row
+            key={c.key}
+            title={c.title}
+            subtitle={`${c.subtitle} ${c.renewText ? `• ${c.renewText}` : ''}`}
+            left={
+              <View style={styles.rowIconWrap}>
+                {c.icon}
+                <View style={styles.rowIconBadge}>
+                  <ConsumableBadge count={c.count} />
                 </View>
               </View>
+            }
+            onPress={() => router.push(`/(tabs)/account/consumables/${c.key}`)}
+          />
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
 
-              {/* Center: Title + Description */}
-              <View style={styles.badgeCenter}>
-                <AppText variant="body" style={[styles.badgeLabel, isCompleted && styles.badgeLabelCompleted]}>
-                  {info.label}
-                </AppText>
-                {info.description && (
-                  <AppText variant="caption" style={styles.badgeDescription}>
-                    {info.description}
-                  </AppText>
-                )}
-              </View>
+function TrustAndSafetyTab() {
+  const router = useRouter();
+  const [hideProfile, setHideProfileState] = useState(false);
+  const [loadingHideProfile, setLoadingHideProfile] = useState(true);
 
-              {/* Right: Trophy + Info Icon */}
-              <View style={styles.badgeRight}>
-                {showTrophy && (
-                  <View style={styles.trophyIcon}>
-                    <IconSymbol name="trophy.fill" size={24} color={Colors.primary} />
-                  </View>
-                )}
-                <TouchableOpacity
-                  style={styles.infoIcon}
-                  onPress={() => handleInfoPress(badge.type)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <IconSymbol name="info.circle" size={20} color={isCompleted ? Colors.text + '80' : Colors.primary} />
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
+  useEffect(() => {
+    const loadProfileHidden = async () => {
+      try {
+        const { data: session } = await supabase.auth.getSession();
+        const userId = session.session?.user?.id;
+        if (!userId) return;
+
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('is_hidden')
+          .eq('user_id', userId)
+          .single();
+
+        if (error) {
+          console.error('[TrustAndSafetyTab] Failed to load profile hidden status:', error);
+        } else {
+          setHideProfileState(data?.is_hidden ?? false);
+        }
+      } catch (error) {
+        console.error('[TrustAndSafetyTab] Error loading profile hidden status:', error);
+      } finally {
+        setLoadingHideProfile(false);
+      }
+    };
+
+    loadProfileHidden();
+  }, []);
+
+  const handleToggleHideProfile = async (value: boolean) => {
+    setHideProfileState(value);
+    try {
+      await setProfileHidden(value);
+    } catch (error) {
+      setHideProfileState(!value);
+      Alert.alert('Error', 'Failed to update profile visibility. Please try again.');
+    }
+  };
+
+  return (
+    <ScrollView
+      style={styles.tabScroll}
+      contentContainerStyle={styles.tabScrollContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <SectionTitle title="Trust" />
+      <View style={styles.sectionGroup}>
+        <MyBadgesInline />
       </View>
 
-      {/* Info Modal */}
-      <Modal
-        visible={infoModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setInfoModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <AppText variant="heading" style={styles.modalTitle}>
-                {selectedBadgeInfo?.label}
-              </AppText>
-              <TouchableOpacity
-                onPress={() => setInfoModalVisible(false)}
-                style={styles.modalCloseButton}
-              >
-                <IconSymbol name="xmark" size={24} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-            <AppText variant="body" style={styles.modalText}>
-              {selectedBadgeInfo?.infoText}
-            </AppText>
-            <TouchableOpacity
-              style={styles.modalButton}
-              onPress={() => setInfoModalVisible(false)}
-            >
-              <AppText variant="body" style={styles.modalButtonText}>
-                Got it
-              </AppText>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      <SectionTitle title="Safety" />
+      <View style={styles.sectionGroup}>
+        <Row
+          title="Hide my profile"
+          subtitle="Hide your profile from being shown to others"
+          left={<IconSymbol name="eye.slash" size={18} color={Colors.primary} />}
+          right={
+            <Switch
+              value={hideProfile}
+              onValueChange={handleToggleHideProfile}
+              disabled={loadingHideProfile}
+            />
+          }
+          showChevron={false}
+        />
+        <Row
+          title="Blocked users"
+          subtitle="View and manage blocked users"
+          left={<IconSymbol name="hand.raised.fill" size={18} color={Colors.primary} />}
+          onPress={() => router.push('/(tabs)/account/blocked-users')}
+        />
+      </View>
+
+      <SectionTitle title="Legal" />
+      <View style={styles.sectionGroup}>
+        <Row
+          title="Terms"
+          left={<IconSymbol name="doc.text" size={18} color={Colors.primary} />}
+          onPress={() => {
+            openLegalUrl(TERMS_URL, 'Terms').catch((e) => console.error('[Legal] Failed to open Terms:', e));
+          }}
+        />
+        <Row
+          title="Privacy policy"
+          left={<IconSymbol name="hand.raised" size={18} color={Colors.primary} />}
+          onPress={() => {
+            openLegalUrl(PRIVACY_URL, 'Privacy policy').catch((e) =>
+              console.error('[Legal] Failed to open Privacy policy:', e)
+            );
+          }}
+        />
+      </View>
     </ScrollView>
   );
 }
@@ -220,20 +317,79 @@ function MyBadgesTab() {
 export default function AccountScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
-  const [activeTab, setActiveTab] = useState<AccountTab>('pack');
+  const { me, meLoaded, refreshBadges } = useMe();
+  const [activeTab, setActiveTab] = useState<AccountHomeTab>('upgrades');
+  const [verificationModalOpen, setVerificationModalOpen] = useState(false);
 
-  // Handle tab parameter from navigation
   useEffect(() => {
-    if (params.tab && (params.tab === 'pack' || params.tab === 'photos' || params.tab === 'badges')) {
-      setActiveTab(params.tab as AccountTab);
+    if (params.tab === 'trust_safety' || params.tab === 'upgrades') {
+      setActiveTab(params.tab);
     }
   }, [params.tab]);
 
+  const dogSlots = useMemo(() => {
+    return me.dogs.map((d) => d.slot).filter((slot) => slot >= 1 && slot <= 3);
+  }, [me.dogs]);
+
+  const { humanBucket } = usePhotoBuckets(dogSlots);
+
+  const avatarUrl = useMemo(() => {
+    const firstHumanPhoto = humanBucket.photos?.[0];
+    return publicPhotoUrl(firstHumanPhoto?.storage_path);
+  }, [humanBucket.photos]);
+
+  const firstName = useMemo(() => {
+    const displayName = me.profile?.display_name || '';
+    const trimmed = displayName.trim();
+    if (!trimmed) return 'You';
+    return trimmed.split(' ')[0] || trimmed;
+  }, [me.profile?.display_name]);
+
+  const photoWithDogVerified = useMemo(() => {
+    return Boolean((me.badges || []).find((b: any) => b.type === 'photo_with_dog' && b.earned));
+  }, [me.badges]);
+
+  const selfieVerified = useMemo(() => {
+    return Boolean((me.badges || []).find((b: any) => b.type === 'selfie_verified' && b.earned));
+  }, [me.badges]);
+
+  const verification = useMemo(() => {
+    const both = photoWithDogVerified && selfieVerified;
+    const label = both
+      ? 'Photo + Selfie verified'
+      : photoWithDogVerified
+        ? 'Photo verified'
+        : selfieVerified
+          ? 'Selfie verified'
+          : null;
+
+    const color = both
+      ? '#F59E0B'
+      : photoWithDogVerified
+        ? '#3B82F6'
+        : selfieVerified
+          ? '#14B8A6'
+          : null;
+
+    return { label, color };
+  }, [photoWithDogVerified, selfieVerified]);
+
+  // Ensure badges are available for verification UI (MeContext is cached; refresh only if missing).
+  useEffect(() => {
+    if (meLoaded && (!me.badges || me.badges.length === 0)) {
+      refreshBadges().catch((e) => console.error('[AccountScreen] refreshBadges failed:', e));
+    }
+  }, [meLoaded, me.badges, refreshBadges]);
+
+  const verificationIconColor = verification.color || Colors.primary;
+
   return (
     <ScreenContainer edges={['top']}>
-      <View style={styles.header}>
-        <View style={styles.headerSpacer} />
-        <View style={styles.headerIcons}>
+      <View style={styles.headerTop}>
+        <AppText variant="heading" style={styles.appName}>
+          Pawfectly
+        </AppText>
+        <View style={styles.headerRight}>
           <TouchableOpacity
             style={styles.headerButton}
             onPress={() => router.push('/(tabs)/preferences?from=account')}
@@ -249,53 +405,111 @@ export default function AccountScreen() {
         </View>
       </View>
 
+      <View style={styles.profileHeader}>
+        <TouchableOpacity
+          onPress={() => router.push('/(tabs)/account/profile')}
+          activeOpacity={0.85}
+          style={styles.avatarButton}
+        >
+          <View style={styles.avatarOuter}>
+            <LinearGradient
+              colors={INSTAGRAM_STORY_GRADIENT}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.avatarRing}
+            >
+              <View style={styles.avatarInner}>
+                {avatarUrl ? (
+                  <Image
+                    source={{ uri: avatarUrl }}
+                    style={styles.avatarImage}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                  />
+                ) : (
+                  <View style={styles.avatarPlaceholder}>
+                    <IconSymbol name="person.fill" size={30} color={Colors.text + '80'} />
+                  </View>
+                )}
+              </View>
+            </LinearGradient>
+
+            <View style={styles.avatarEditBadge}>
+              <MaterialIcons name="edit" size={18} color={Colors.background} />
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        <View style={styles.nameRow}>
+          <AppText variant="heading" style={styles.nameText}>
+            {firstName}
+          </AppText>
+          {!!verification.label && !!verification.color && (
+            <TouchableOpacity
+              onPress={() => setVerificationModalOpen(true)}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              activeOpacity={0.85}
+            >
+              <MaterialIcons name="verified" size={20} color={verificationIconColor} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
       <View style={styles.tabBar}>
         <TouchableOpacity
-          style={[styles.tab, activeTab === 'pack' && styles.tabActive]}
-          onPress={() => setActiveTab('pack')}
+          style={[styles.tab, activeTab === 'upgrades' && styles.tabActive]}
+          onPress={() => setActiveTab('upgrades')}
         >
           <AppText
             variant="body"
-            style={[styles.tabText, activeTab === 'pack' && styles.tabTextActive]}
+            style={[styles.tabText, activeTab === 'upgrades' && styles.tabTextActive]}
           >
-            My Pack
+            Upgrades
           </AppText>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.tab, activeTab === 'photos' && styles.tabActive]}
-          onPress={() => setActiveTab('photos')}
+          style={[styles.tab, activeTab === 'trust_safety' && styles.tabActive]}
+          onPress={() => setActiveTab('trust_safety')}
         >
           <AppText
             variant="body"
-            style={[styles.tabText, activeTab === 'photos' && styles.tabTextActive]}
+            style={[styles.tabText, activeTab === 'trust_safety' && styles.tabTextActive]}
           >
-            Our Photos
-          </AppText>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'badges' && styles.tabActive]}
-          onPress={() => setActiveTab('badges')}
-        >
-          <AppText
-            variant="body"
-            style={[styles.tabText, activeTab === 'badges' && styles.tabTextActive]}
-          >
-            My Badges
+            Trust & Safety
           </AppText>
         </TouchableOpacity>
       </View>
 
       <View style={styles.tabContainer}>
-        {activeTab === 'pack' && <MyPackTab onNewDogAdded={() => setActiveTab('photos')} />}
-        {activeTab === 'photos' && <OurPhotosTab />}
-        {activeTab === 'badges' && <MyBadgesTab />}
+        {activeTab === 'upgrades' ? <UpgradesTab /> : <TrustAndSafetyTab />}
       </View>
+
+      <Modal
+        visible={verificationModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setVerificationModalOpen(false)}
+      >
+        <TouchableOpacity
+          style={styles.tooltipOverlay}
+          activeOpacity={1}
+          onPress={() => setVerificationModalOpen(false)}
+        >
+          <View style={styles.tooltipCard}>
+            <AppText variant="body" style={styles.tooltipText}>
+              {verification.label || ''}
+            </AppText>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
+  headerTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -304,15 +518,82 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(31, 41, 55, 0.1)',
   },
-  headerSpacer: {
-    flex: 1,
+  appName: {
+    fontWeight: 'bold',
   },
-  headerIcons: {
+  headerRight: {
     flexDirection: 'row',
-    gap: Spacing.md,
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   headerButton: {
     padding: Spacing.sm,
+  },
+  profileHeader: {
+    alignItems: 'center',
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
+  },
+  avatarButton: {
+    paddingVertical: Spacing.xs,
+  },
+  avatarOuter: {
+    width: 92,
+    height: 92,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'visible',
+  },
+  avatarRing: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    padding: 4,
+  },
+  avatarInner: {
+    flex: 1,
+    borderRadius: 42,
+    overflow: 'hidden',
+    backgroundColor: Colors.background,
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(31, 41, 55, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.background,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+    elevation: 4,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  nameText: {
+    fontWeight: '700',
+    fontSize: 18,
   },
   tabBar: {
     flexDirection: 'row',
@@ -340,174 +621,113 @@ const styles = StyleSheet.create({
   tabContainer: {
     flex: 1,
   },
-  tabContent: {
+  tabScroll: {
     flex: 1,
   },
-  tabContentContainer: {
+  tabScrollContent: {
     padding: Spacing.lg,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.lg,
   },
-  section: {
-    marginBottom: Spacing.xl,
+  plusCard: {
+    backgroundColor: 'rgba(59, 130, 246, 0.08)',
+  },
+  plusCardHeader: {
+    marginBottom: Spacing.md,
+  },
+  plusTitle: {
+    marginBottom: Spacing.xs,
+  },
+  plusSubtitle: {
+    opacity: 0.8,
   },
   sectionTitle: {
-    marginBottom: Spacing.md,
-  },
-  dogCard: {
-    padding: Spacing.md,
-    backgroundColor: 'rgba(31, 41, 55, 0.05)',
-    borderRadius: 8,
-    marginBottom: Spacing.md,
-  },
-  dogName: {
-    fontWeight: '600',
-    marginBottom: Spacing.xs,
-  },
-  dogDetail: {
-    opacity: 0.7,
-    marginBottom: Spacing.xs,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    marginBottom: Spacing.md,
-  },
-  infoLabel: {
-    fontWeight: '600',
-    marginRight: Spacing.sm,
-    minWidth: 80,
-  },
-  infoValue: {
-    flex: 1,
-  },
-  placeholderText: {
-    opacity: 0.5,
-    textAlign: 'center',
-    paddingVertical: Spacing.xl,
-  },
-  editButton: {
-    marginTop: Spacing.lg,
-    padding: Spacing.md,
-    backgroundColor: Colors.primary,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  editButtonText: {
-    color: Colors.background,
-    fontWeight: '600',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.xl,
-  },
-  badgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: Spacing.md,
-    backgroundColor: 'rgba(31, 41, 55, 0.05)',
-    borderRadius: 8,
-    marginBottom: Spacing.md,
-    minHeight: 60,
-  },
-  badgeRowDisabled: {
     opacity: 0.6,
+    fontWeight: '700',
+    letterSpacing: 0.8,
   },
-  badgeLeft: {
-    marginRight: Spacing.md,
+  sectionGroup: {
+    gap: Spacing.sm,
   },
-  checkbox: {
-    width: 24,
-    height: 24,
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: 'rgba(31, 41, 55, 0.05)',
     borderRadius: 12,
-    borderWidth: 2,
-    borderColor: 'rgba(31, 41, 55, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
-  checkboxChecked: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
+  rowDisabled: {
+    opacity: 0.6,
   },
-  checkmark: {
-    color: Colors.background,
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  badgeCenter: {
+  rowLeft: {
     flex: 1,
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
   },
-  badgeLabel: {
+  rowText: {
+    flex: 1,
+  },
+  rowTitle: {
     fontWeight: '600',
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
-  badgeLabelCompleted: {
+  rowSubtitle: {
     opacity: 0.7,
   },
-  badgeDescription: {
-    opacity: 0.6,
-    fontSize: 12,
-  },
-  badgeRight: {
+  rowRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  trophyIcon: {
-    marginRight: Spacing.xs,
+  rowChevron: {
+    opacity: 0.5,
   },
-  infoIcon: {
-    padding: Spacing.xs,
+  rowIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  modalOverlay: {
+  rowIconBadge: {
+    position: 'absolute',
+    right: -6,
+    top: -6,
+  },
+  countBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  countBadgeText: {
+    color: Colors.background,
+    fontWeight: '700',
+    fontSize: 10,
+  },
+  tooltipOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0,0,0,0.25)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: Spacing.lg,
   },
-  modalContent: {
+  tooltipCard: {
     backgroundColor: Colors.background,
-    borderRadius: 16,
-    padding: Spacing.lg,
-    width: '100%',
-    maxWidth: 400,
+    borderRadius: 12,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    maxWidth: 320,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  modalTitle: {
-    flex: 1,
-  },
-  modalCloseButton: {
-    padding: Spacing.xs,
-  },
-  modalText: {
-    marginBottom: Spacing.lg,
-    lineHeight: 22,
-  },
-  modalButton: {
-    backgroundColor: Colors.primary,
-    padding: Spacing.md,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalButtonText: {
-    color: Colors.background,
+  tooltipText: {
     fontWeight: '600',
-  },
-  noteSection: {
-    marginTop: Spacing.lg,
-    padding: Spacing.md,
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderRadius: 8,
-  },
-  noteText: {
-    opacity: 0.8,
-    textAlign: 'center',
   },
 });
 

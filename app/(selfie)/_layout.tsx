@@ -8,7 +8,7 @@ export default function SelfieVerifyLayout() {
         name="intro"
         options={{
           title: 'Selfie verification',
-          headerLeft: () => <BackTo href="/(tabs)/account?tab=badges" />,
+          headerLeft: () => <BackTo href="/(tabs)/account?tab=trust_safety" />,
         }}
       />
       <Stack.Screen
@@ -29,7 +29,7 @@ export default function SelfieVerifyLayout() {
         name="result"
         options={{
           title: 'Result',
-          headerLeft: () => <BackTo href="/(tabs)/account?tab=badges" />,
+          headerLeft: () => <BackTo href="/(tabs)/account?tab=trust_safety" />,
         }}
       />
     </Stack>

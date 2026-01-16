@@ -1,49 +1,117 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Alert, Switch, Modal, TextInput, ActivityIndicator } from 'react-native';
-import { useRouter, useSegments } from 'expo-router';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  TextInput,
+  TouchableOpacity,
+  View,
+  Modal,
+} from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
+
 import { ScreenContainer } from '@/components/common/ScreenContainer';
-import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
+import { AppText } from '@/components/ui/AppText';
+import { Colors } from '@/constants/colors';
+import { Spacing } from '@/constants/spacing';
 import { useAuth } from '@/contexts/AuthContext';
 import { useAuthSessionStore } from '@/contexts/AuthSessionStore';
-import { Spacing } from '@/constants/spacing';
-import { Colors } from '@/constants/colors';
+import { useMe } from '@/contexts/MeContext';
+import { deleteAccountPermanently } from '@/services/account/settingsService';
 import { setProfileHidden } from '@/services/profile/statusRepository';
 import { supabase } from '@/services/supabase/supabaseClient';
-import { deleteAccountPermanently } from '@/services/account/settingsService';
-import { useMe } from '@/contexts/MeContext';
-import { resetDislikes, clearDislikeOutbox, markLanesForRefresh } from '@/services/feed/feedService';
-import { ResetDislikesModal } from '@/components/account/ResetDislikesModal';
+
+const TERMS_URL = process.env.EXPO_PUBLIC_TERMS_URL || 'https://example.com/terms';
+const PRIVACY_URL = process.env.EXPO_PUBLIC_PRIVACY_URL || 'https://example.com/privacy';
+
+async function openLegalUrl(url: string | undefined, title: string) {
+  if (!url) {
+    Alert.alert(title, 'This link is not configured yet.');
+    return;
+  }
+  await openBrowserAsync(url, { presentationStyle: WebBrowserPresentationStyle.AUTOMATIC });
+}
+
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <AppText variant="caption" style={styles.sectionHeader}>
+      {title.toUpperCase()}
+    </AppText>
+  );
+}
+
+function SettingsRow({
+  title,
+  subtitle,
+  right,
+  onPress,
+  disabled,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: React.ReactNode;
+  onPress?: () => void;
+  disabled?: boolean;
+}) {
+  const isPressable = !!onPress;
+  return (
+    <TouchableOpacity
+      style={[styles.settingItem, disabled && styles.settingItemDisabled]}
+      onPress={onPress}
+      disabled={!!disabled}
+      activeOpacity={isPressable ? 0.75 : 1}
+    >
+      <View style={styles.settingContent}>
+        <AppText variant="body" style={styles.settingTitle}>
+          {title}
+        </AppText>
+        {!!subtitle && (
+          <AppText variant="caption" style={styles.settingSubtitle}>
+            {subtitle}
+          </AppText>
+        )}
+      </View>
+      <View style={styles.settingRight}>
+        {right}
+        {isPressable && <AppText variant="body" style={styles.chevron}>→</AppText>}
+      </View>
+    </TouchableOpacity>
+  );
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const segments = useSegments();
+  const params = useLocalSearchParams<{ open?: string }>();
   const { signOut, user } = useAuth();
-  const { me, reset: resetMeCache } = useMe();
+  const { reset: resetMeCache } = useMe();
   const { setDeletingAccount } = useAuthSessionStore();
+
   const [hideProfile, setHideProfile] = useState(false);
   const [loadingHideProfile, setLoadingHideProfile] = useState(true);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  // Mock subscription status - in production, this would come from Supabase
+
+  // Mock subscription status - in production, this would come from Supabase/Billing provider.
   const [currentSubscription] = useState<string | null>('3 Months Premium');
+
   const [showPermanentDeleteModal, setShowPermanentDeleteModal] = useState(false);
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState('');
   const [deletingPermanently, setDeletingPermanently] = useState(false);
-  const [showResetDislikesModal, setShowResetDislikesModal] = useState(false);
-  const [resettingDislikes, setResettingDislikes] = useState(false);
 
   // Load current is_hidden status
   useEffect(() => {
     const loadProfileHidden = async () => {
       if (!user?.id) return;
-      
+
       try {
         const { data, error } = await supabase
           .from('profiles')
           .select('is_hidden')
           .eq('user_id', user.id)
           .single();
-        
+
         if (error) {
           console.error('[SettingsScreen] Failed to load profile hidden status:', error);
         } else {
@@ -59,39 +127,36 @@ export default function SettingsScreen() {
     loadProfileHidden();
   }, [user?.id]);
 
+  // Deep-link support: open delete modal from Trust & Safety.
+  useEffect(() => {
+    if (params.open === 'delete') {
+      setPermanentDeleteConfirm('');
+      setShowPermanentDeleteModal(true);
+    }
+  }, [params.open]);
+
   const handleToggleHideProfile = async (value: boolean) => {
-    // Optimistically update UI
     setHideProfile(value);
-    
     try {
       await setProfileHidden(value);
     } catch (error) {
-      // Revert on error
       setHideProfile(!value);
-      Alert.alert(
-        'Error',
-        'Failed to update profile visibility. Please try again.',
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Error', 'Failed to update profile visibility. Please try again.');
     }
   };
 
   const handleLogOut = () => {
-    Alert.alert(
-      'Log Out',
-      'Are you sure you want to log out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log Out',
-          style: 'destructive',
-          onPress: async () => {
-            await signOut();
-            router.replace('/(onboarding)/welcome');
-          },
+    Alert.alert('Log Out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log Out',
+        style: 'destructive',
+        onPress: async () => {
+          await signOut();
+          router.replace('/(onboarding)/welcome');
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const handlePermanentDeleteAccount = () => {
@@ -101,54 +166,34 @@ export default function SettingsScreen() {
 
   const handleConfirmPermanentDelete = async () => {
     if (deletingPermanently) return;
-
-    // Validate confirmation text
     if (permanentDeleteConfirm.trim() !== 'DELETE') {
       Alert.alert('Invalid confirmation', 'Please type DELETE exactly to confirm.');
       return;
     }
 
-    // Immediately set deletion flag to prevent bootstrap operations
     setDeletingAccount(true);
     setDeletingPermanently(true);
-
-    // Immediately navigate to deleting-account screen BEFORE server call
-    // This prevents TabLayout from mounting/bootstrapping during deletion
     router.replace('/(onboarding)/deleting-account');
 
     try {
-      // Delete account permanently via Edge Function
       await deleteAccountPermanently();
-      
-      // Clear app caches/state
       resetMeCache();
-      
-      // Sign out
       await signOut();
-      
-      // Reset deletion flag (optional, since we're signed out)
       setDeletingAccount(false);
-      
-      // Navigate to welcome screen
       router.replace('/(onboarding)/welcome');
-      
-      // Show confirmation (using Alert since we're navigating away)
       setTimeout(() => {
         Alert.alert('Account deleted', 'Your account has been permanently deleted.');
       }, 500);
     } catch (error) {
       console.error('[SettingsScreen] Failed to delete account permanently:', error);
-      
-      // Reset deletion flag on error
       setDeletingAccount(false);
       setDeletingPermanently(false);
-      
-      // Navigate back to settings on error
       router.replace('/(tabs)/account/settings');
-      
       Alert.alert(
         'Error',
-        error instanceof Error ? error.message : 'Failed to delete account permanently. Please try again.',
+        error instanceof Error
+          ? error.message
+          : 'Failed to delete account permanently. Please try again.',
         [{ text: 'OK' }]
       );
     }
@@ -160,144 +205,66 @@ export default function SettingsScreen() {
     setPermanentDeleteConfirm('');
   };
 
-  const handleResetDislikes = async (lanes: Array<'pals' | 'match'>) => {
-    if (resettingDislikes) return;
-
-    setResettingDislikes(true);
-    try {
-      // CRITICAL: Clear pending outbox events BEFORE calling reset
-      // This prevents re-applying suppressions after reset
-      await clearDislikeOutbox(lanes);
-      
-      // Reset dislikes on the server
-      await resetDislikes(lanes);
-      
-      // Mark lanes for refresh so feed screen clears their state
-      await markLanesForRefresh(lanes);
-      
-      setShowResetDislikesModal(false);
-      Alert.alert(
-        'Success', 
-        'Dislikes have been reset. The feed will refresh automatically.',
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              // Navigate back to feed - it will refresh on focus
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace('/(tabs)/index');
-              }
-            }
-          }
-        ]
-      );
-    } catch (error: any) {
-      console.error('[SettingsScreen] Failed to reset dislikes:', error);
-      Alert.alert('Error', error.message || 'Failed to reset dislikes. Please try again.');
-    } finally {
-      setResettingDislikes(false);
-    }
-  };
-
-  const settingsItems = [
-    {
-      id: 'hide',
-      title: 'Hide my profile',
-      subtitle: 'Hide your profile from showing up on others feed',
-      type: 'switch' as const,
-      value: hideProfile,
-      onValueChange: handleToggleHideProfile,
-      disabled: loadingHideProfile,
-    },
-    {
-      id: 'notifications',
-      title: 'Notifications',
-      subtitle: 'Manage your notification preferences',
-      type: 'switch' as const,
-      value: notificationsEnabled,
-      onValueChange: setNotificationsEnabled,
-      disabled: true, // Will work on this later
-    },
-    {
-      id: 'blocked',
-      title: 'Blocked Users',
-      subtitle: 'View and manage blocked users',
-      type: 'navigation' as const,
-      onPress: () => router.push('/(tabs)/account/settings/blocked-users'),
-    },
-    {
-      id: 'subscription',
-      title: 'Subscription',
-      subtitle: currentSubscription 
-        ? `Current plan: ${currentSubscription}` 
-        : 'View and manage your subscription',
-      type: 'navigation' as const,
-      onPress: () => router.push('/(tabs)/account/settings/subscription'),
-    },
-    {
-      id: 'resetDislikes',
-      title: 'Reset Dislikes',
-      subtitle: 'Clear your rejected profiles and see them again',
-      type: 'navigation' as const,
-      onPress: () => setShowResetDislikesModal(true),
-    },
-    {
-      id: 'legal',
-      title: 'Legal',
-      subtitle: 'Privacy Policy, Terms & Conditions',
-      type: 'navigation' as const,
-      onPress: () => {
-        Alert.alert('Legal', 'Legal pages will be implemented later.');
-      },
-    },
-  ];
+  const subscriptionSubtitle = useMemo(() => {
+    return currentSubscription
+      ? `Current plan: ${currentSubscription}`
+      : 'Manage or cancel your subscription';
+  }, [currentSubscription]);
 
   return (
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
         <View style={styles.section}>
-          {settingsItems.map((item) => (
-            <TouchableOpacity
-              key={item.id}
-              style={[
-                styles.settingItem,
-                item.disabled && styles.settingItemDisabled,
-              ]}
-              onPress={item.type === 'navigation' ? item.onPress : undefined}
-              disabled={item.disabled}
-            >
-              <View style={styles.settingContent}>
-                <AppText variant="body" style={styles.settingTitle}>
-                  {item.title}
-                </AppText>
-                <AppText variant="caption" style={styles.settingSubtitle}>
-                  {item.subtitle}
-                </AppText>
-              </View>
-              {item.type === 'switch' && (
-                <Switch
-                  value={item.value}
-                  onValueChange={item.onValueChange}
-                  disabled={item.disabled}
-                />
-              )}
-              {item.type === 'navigation' && (
-                <AppText variant="body" style={styles.chevron}>
-                  →
-                </AppText>
-              )}
-            </TouchableOpacity>
-          ))}
+          <SectionHeader title="Privacy" />
+          <SettingsRow
+            title="Hide profile"
+            subtitle="Hide your profile from being shown to others"
+            right={
+              <Switch
+                value={hideProfile}
+                onValueChange={handleToggleHideProfile}
+                disabled={loadingHideProfile}
+              />
+            }
+          />
+          <SettingsRow
+            title="Blocked users"
+            subtitle="View and manage blocked users"
+            onPress={() => router.push('/(tabs)/account/settings/blocked-users')}
+          />
         </View>
 
         <View style={styles.section}>
-          <AppButton
-            variant="ghost"
-            onPress={handleLogOut}
-            style={styles.logOutButton}
-          >
+          <SectionHeader title="Subscription" />
+          <SettingsRow
+            title="Manage/Cancel subscription"
+            subtitle={subscriptionSubtitle}
+            onPress={() => router.push('/(tabs)/account/settings/subscription')}
+          />
+        </View>
+
+        <View style={styles.section}>
+          <SectionHeader title="Legal" />
+          <SettingsRow
+            title="Terms"
+            onPress={() => {
+              openLegalUrl(TERMS_URL, 'Terms').catch((e) =>
+                console.error('[SettingsScreen] Failed to open Terms:', e)
+              );
+            }}
+          />
+          <SettingsRow
+            title="Privacy policy"
+            onPress={() => {
+              openLegalUrl(PRIVACY_URL, 'Privacy policy').catch((e) =>
+                console.error('[SettingsScreen] Failed to open Privacy policy:', e)
+              );
+            }}
+          />
+        </View>
+
+        <View style={styles.section}>
+          <AppButton variant="ghost" onPress={handleLogOut} style={styles.logOutButton}>
             Log Out
           </AppButton>
         </View>
@@ -307,6 +274,7 @@ export default function SettingsScreen() {
             style={[styles.deleteButton, styles.permanentDeleteButton]}
             onPress={handlePermanentDeleteAccount}
             disabled={deletingPermanently}
+            activeOpacity={0.8}
           >
             <AppText variant="body" style={styles.permanentDeleteButtonText}>
               Delete Account Permanently
@@ -315,10 +283,9 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
 
-      {/* Permanent Delete Account Confirmation Modal */}
       <Modal
         visible={showPermanentDeleteModal}
-        transparent={true}
+        transparent
         animationType="fade"
         onRequestClose={handleCancelPermanentDelete}
       >
@@ -328,12 +295,13 @@ export default function SettingsScreen() {
               Delete Account Permanently?
             </AppText>
             <AppText variant="body" style={styles.modalText}>
-              This action cannot be undone. All your data, photos, and account information will be permanently deleted.
+              This action cannot be undone. All your data, photos, and account information will be
+              permanently deleted.
             </AppText>
             <AppText variant="body" style={[styles.modalText, styles.warningText]}>
               Type <AppText style={{ fontWeight: 'bold' }}>DELETE</AppText> to confirm:
             </AppText>
-            
+
             <View style={styles.reasonInputContainer}>
               <TextInput
                 style={styles.reasonInput}
@@ -371,16 +339,6 @@ export default function SettingsScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* Reset Dislikes Modal */}
-      <ResetDislikesModal
-        visible={showResetDislikesModal}
-        onClose={() => setShowResetDislikesModal(false)}
-        onSubmit={handleResetDislikes}
-        loading={resettingDislikes}
-        palsEnabled={me.preferencesRaw.pals_enabled}
-        matchEnabled={me.preferencesRaw.match_enabled}
-      />
     </ScreenContainer>
   );
 }
@@ -396,6 +354,12 @@ const styles = StyleSheet.create({
   section: {
     marginBottom: Spacing.xl,
   },
+  sectionHeader: {
+    opacity: 0.6,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginBottom: Spacing.sm,
+  },
   settingItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -403,7 +367,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.md,
     backgroundColor: 'rgba(31, 41, 55, 0.05)',
-    borderRadius: 8,
+    borderRadius: 12,
     marginBottom: Spacing.sm,
   },
   settingItemDisabled: {
@@ -420,6 +384,11 @@ const styles = StyleSheet.create({
   settingSubtitle: {
     opacity: 0.7,
   },
+  settingRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
   chevron: {
     opacity: 0.5,
   },
@@ -429,10 +398,6 @@ const styles = StyleSheet.create({
   deleteButton: {
     padding: Spacing.md,
     alignItems: 'center',
-  },
-  deleteButtonText: {
-    color: Colors.error,
-    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,
@@ -464,10 +429,6 @@ const styles = StyleSheet.create({
   reasonInputContainer: {
     marginBottom: Spacing.lg,
   },
-  reasonLabel: {
-    marginBottom: Spacing.xs,
-    opacity: 0.7,
-  },
   reasonInput: {
     borderWidth: 1,
     borderColor: 'rgba(31, 41, 55, 0.2)',
@@ -475,7 +436,7 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     color: Colors.text,
     fontSize: 14,
-    minHeight: 80,
+    minHeight: 44,
     backgroundColor: 'rgba(31, 41, 55, 0.05)',
   },
   modalButtons: {
@@ -486,13 +447,11 @@ const styles = StyleSheet.create({
   modalButton: {
     flex: 1,
   },
-  deleteConfirmButton: {
-    backgroundColor: Colors.error,
-  },
   permanentDeleteButton: {
     backgroundColor: Colors.error,
     borderWidth: 2,
     borderColor: Colors.error,
+    borderRadius: 12,
   },
   permanentDeleteButtonText: {
     color: '#FFFFFF',

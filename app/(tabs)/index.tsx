@@ -989,7 +989,7 @@ export default function FeedScreen() {
     <ScreenContainer>
       <View style={styles.header}>
         <AppText variant="heading" style={styles.appName}>
-          Pawfect
+          Pawfectly
         </AppText>
         <View style={styles.headerRight}>
           {hasProfile && pendingUndoNew && (

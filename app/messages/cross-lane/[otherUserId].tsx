@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView, Platform } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { AppText } from '@/components/ui/AppText';
 import { AppButton } from '@/components/ui/AppButton';
@@ -21,9 +21,34 @@ import { chatEvents, CHAT_EVENTS } from '@/utils/chatEvents';
 
 type TabType = 'chat' | 'profile';
 
+function formatTimeRemaining(targetIso: string): string {
+  const targetMs = new Date(targetIso).getTime();
+  const diffMs = Math.max(0, targetMs - Date.now());
+
+  const totalMinutes = Math.max(0, Math.ceil(diffMs / (60 * 1000)));
+
+  // Display a single unit:
+  // - >= 24h: days (rounded up)
+  // - >= 60m: hours (rounded up)
+  // - else: minutes
+  if (totalMinutes >= 60 * 24) {
+    const days = Math.ceil(totalMinutes / (60 * 24));
+    return `${days} day${days === 1 ? '' : 's'}`;
+  }
+
+  if (totalMinutes >= 60) {
+    const hours = Math.ceil(totalMinutes / 60);
+    return `${hours} hr${hours === 1 ? '' : 's'}`;
+  }
+
+  const mins = totalMinutes;
+  return `${mins} min${mins === 1 ? '' : 's'}`;
+}
+
 export default function CrossLanePendingScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const { otherUserId, peerName, peerPhotoPath, peerUserId } = useLocalSearchParams<{
     otherUserId: string;
     peerName?: string;
@@ -109,12 +134,13 @@ export default function CrossLanePendingScreen() {
 
   const isChooser = pending?.is_chooser === true;
   const message = pending?.message ?? null;
-  const hoursLeft = pending?.expires_at
-    ? Math.max(0, Math.ceil((new Date(pending.expires_at).getTime() - Date.now()) / (60 * 60 * 1000)))
-    : null;
+  const timeLeftText = pending?.expires_at ? formatTimeRemaining(pending.expires_at) : null;
+  const systemBarSpacerHeight = Math.max(insets.bottom, 0);
+  const systemBarSpacerColor = Platform.OS === 'android' ? '#000000' : Colors.background;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+    // Match the main chat screen: top safe-area only, bottom uses a colored spacer ("letterbox").
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerButton} activeOpacity={0.7}>
           <MaterialIcons name="arrow-back" size={24} color={Colors.text} />
@@ -156,14 +182,17 @@ export default function CrossLanePendingScreen() {
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
       ) : activeTab === 'chat' ? (
-        <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
+        <ScrollView
+          style={styles.content}
+          contentContainerStyle={styles.contentInner}
+        >
           <View style={styles.banner}>
             <AppText variant="body" style={styles.bannerTitle}>
               {displayName} is open to dating. Choose the way forward.
             </AppText>
-            {hoursLeft !== null && (
+            {timeLeftText !== null && (
               <AppText variant="caption" style={styles.bannerSubtitle}>
-                Connection will be defaulted to Pals in {hoursLeft} hours.
+                Connection will be defaulted to Pals in {timeLeftText}.
               </AppText>
             )}
           </View>
@@ -221,7 +250,10 @@ export default function CrossLanePendingScreen() {
               <ActivityIndicator size="large" color={Colors.primary} />
             </View>
           ) : profile ? (
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: Spacing.xl }}
+            >
               <FullProfileView payload={profile} readOnly />
             </ScrollView>
           ) : (
@@ -233,6 +265,14 @@ export default function CrossLanePendingScreen() {
           )}
         </View>
       )}
+
+      {/* System navigation spacer ("letterbox") */}
+      <View
+        style={[
+          styles.systemBarSpacer,
+          { height: systemBarSpacerHeight, backgroundColor: systemBarSpacerColor },
+        ]}
+      />
     </SafeAreaView>
   );
 }
@@ -307,6 +347,9 @@ const styles = StyleSheet.create({
   contentInner: {
     padding: Spacing.lg,
     paddingBottom: Spacing.xl,
+  },
+  systemBarSpacer: {
+    width: '100%',
   },
   banner: {
     backgroundColor: Colors.cardBackground,

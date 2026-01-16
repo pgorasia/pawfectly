@@ -115,6 +115,25 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
     return displayName.split(' ')[0] || displayName;
   }, [payload.candidate.display_name]);
 
+  // Trust verification checkmark (photo-with-dog + selfie) for hero overlay.
+  // We infer photo-with-dog from any approved photo containing both human + dog.
+  // We infer selfie from payload.labels.is_verified.
+  const verification = useMemo(() => {
+    const photoWithDog = payload.photos.some((p) => p.contains_dog && p.contains_human);
+    const selfie = Boolean(payload.labels.is_verified);
+    const both = photoWithDog && selfie;
+
+    const color = both
+      ? '#F59E0B'
+      : photoWithDog
+        ? '#3B82F6'
+        : selfie
+          ? '#14B8A6'
+          : null;
+
+    return { show: photoWithDog || selfie, color };
+  }, [payload.photos, payload.labels.is_verified]);
+
   // Get best match dog name for compatibility tier on hero
   const bestMatchDogName = useMemo(() => {
     if (payload.compatibility.best_pair) {
@@ -178,10 +197,15 @@ export const FullProfileView: React.FC<FullProfileViewProps> = ({
               {allDogNames || payload.labels.dog_label}
             </AppText>
             
-            {/* Human first name (secondary, smaller) */}
-            <AppText key="human-name" variant="body" style={styles.heroHumanName}>
-              {humanFirstName}
-            </AppText>
+            {/* Human first name (secondary, smaller) + trust verification */}
+            <View style={styles.heroHumanRow}>
+              <AppText key="human-name" variant="body" style={styles.heroHumanName}>
+                {humanFirstName}
+              </AppText>
+              {verification.show && verification.color && (
+                <MaterialIcons name="verified" size={18} color={verification.color} />
+              )}
+            </View>
             
             {/* Distance and verification row */}
             <View style={styles.heroMetaRow}>
@@ -548,6 +572,11 @@ const styles = StyleSheet.create({
     fontSize: 20,
     color: Colors.background,
     opacity: 0.85,
+  },
+  heroHumanRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   heroDistance: {
     color: Colors.background,

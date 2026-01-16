@@ -78,11 +78,11 @@ export default function SelfieIntroScreen() {
 
   const handleContinue = () => {
     if (isSelfieVerified) {
-      router.replace('/(tabs)/account?tab=badges');
+      router.replace('/(tabs)/account?tab=trust_safety');
       return;
     }
     if (isPending) {
-      router.replace('/(tabs)/account?tab=badges');
+      router.replace('/(tabs)/account?tab=trust_safety');
       return;
     }
     router.push('/(selfie)/photo-selection');
@@ -208,7 +208,7 @@ export default function SelfieIntroScreen() {
         {!isPending && !isSelfieVerified && (
           <TouchableOpacity
             style={styles.secondaryButton}
-            onPress={() => router.replace('/(tabs)/account?tab=badges')}
+            onPress={() => router.replace('/(tabs)/account?tab=trust_safety')}
             activeOpacity={0.8}
           >
             <AppText variant="caption" style={styles.secondaryButtonText}>
