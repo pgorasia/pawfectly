@@ -83,6 +83,12 @@ export type ConversationMessageDTO = {
   created_at: string;
 };
 
+export type ConversationReadReceipt =
+  | {
+      other_last_read_at: string | null;
+    }
+  | null;
+
 export interface SendChatRequestParams {
   targetId: string;
   lane: 'pals' | 'match';
@@ -318,7 +324,11 @@ export async function getConversationMessages(
   conversationId: string,
   limit: number = 30,
   cursor: ConversationMessagesCursor = null
-): Promise<{ messages: ConversationMessageDTO[]; nextCursor: ConversationMessagesCursor }> {
+): Promise<{
+  messages: ConversationMessageDTO[];
+  nextCursor: ConversationMessagesCursor;
+  readReceipt: ConversationReadReceipt;
+}> {
   const { data, error } = await supabase.rpc('get_conversation_messages', {
     p_conversation_id: conversationId,
     p_before_created_at: cursor?.beforeCreatedAt ?? null,
@@ -333,6 +343,7 @@ export async function getConversationMessages(
 
   // data is a JSON object like { messages: [...] }
   const messages: ConversationMessageDTO[] = (data?.messages ?? []) as ConversationMessageDTO[];
+  const readReceipt: ConversationReadReceipt = (data?.read_receipt ?? null) as ConversationReadReceipt;
 
   // For "load older", the next cursor should reference the OLDEST message we have.
   const oldest = messages.length ? messages[0] : null;
@@ -342,7 +353,7 @@ export async function getConversationMessages(
       ? { beforeCreatedAt: oldest.created_at, beforeId: oldest.id }
       : null;
 
-  return { messages, nextCursor };
+  return { messages, nextCursor, readReceipt };
 }
 
 /**

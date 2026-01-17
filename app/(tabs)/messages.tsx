@@ -29,6 +29,8 @@ import { MatchTile } from '@/components/messages/MatchTile';
 import { MessageRow } from '@/components/messages/MessageRow';
 import { RequestRow } from '@/components/messages/RequestRow';
 import { LikedYouPlaceholder } from '@/components/messages/LikedYouPlaceholder';
+import { supabase } from '@/services/supabase/supabaseClient';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   getMessagesHome,
   getIncomingRequests,
@@ -57,6 +59,7 @@ interface CachedData {
 
 export default function MessagesScreen() {
   const router = useRouter();
+  const { user } = useAuth();
 
   // Top-level lane filter
   const [laneFilter, setLaneFilter] = useState<LaneFilter>('all');
@@ -208,6 +211,71 @@ export default function MessagesScreen() {
       loadData();
     }, [loadData])
   );
+
+  // Realtime: update message rows (preview + unread) without refetching
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const channel = supabase
+      .channel('messages_home_threads')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'conversation_messages',
+        },
+        (payload) => {
+          const row = payload.new as any;
+          if (!row?.conversation_id || !row?.created_at) return;
+
+          setMessagesHome((prev) => {
+            if (!prev) return prev;
+
+            const idx = prev.threads.findIndex((t) => t.conversation_id === row.conversation_id);
+            if (idx === -1) {
+              // Could be a request / not in current threads list; let next loadData reconcile.
+              return prev;
+            }
+
+            const t = prev.threads[idx];
+            const isIncoming = row.sender_id && row.sender_id !== user.id;
+
+            const updatedThread: Thread = {
+              ...t,
+              last_message_at: row.created_at,
+              preview: truncatePreview(String(row.body ?? '')),
+              unread_count: isIncoming ? (t.unread_count || 0) + 1 : 0,
+            };
+
+            // WhatsApp-style: move the updated thread to the top immediately.
+            const newThreads = [...prev.threads];
+            newThreads.splice(idx, 1);
+            newThreads.unshift(updatedThread);
+
+            const updated: MessagesHomeResponse = {
+              ...prev,
+              threads: newThreads,
+            };
+
+            // Keep cache in sync so tab switches don't revert.
+            cacheRef.current.messagesHome = updated;
+            cacheRef.current.timestamp = Date.now();
+
+            return updated;
+          });
+        }
+      )
+      .subscribe((status) => {
+        if (__DEV__) {
+          console.log('[MessagesScreen][realtime] subscribe status:', status);
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
 
   /**
    * Listen for first message events from chat screen
@@ -509,6 +577,24 @@ export default function MessagesScreen() {
     const isSentRequest =
       messagesHome?.sent_requests?.some(sr => sr.conversation_id === item.conversation_id) ?? false;
     
+    // Optimistic UX: clear unread highlight immediately when user opens the thread.
+    setMessagesHome((prev) => {
+      if (!prev) return prev;
+      const idx = prev.threads.findIndex((t) => t.conversation_id === item.conversation_id);
+      if (idx === -1) return prev;
+
+      const t = prev.threads[idx];
+      if (!t.unread_count) return prev;
+
+      const newThreads = [...prev.threads];
+      newThreads[idx] = { ...t, unread_count: 0 };
+
+      const updated = { ...prev, threads: newThreads };
+      cacheRef.current.messagesHome = updated;
+      cacheRef.current.timestamp = Date.now();
+      return updated;
+    });
+
     router.push({
       pathname: '/messages/[conversationId]',
       params: {

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Stack } from 'expo-router';
+import { MaterialIcons } from '@expo/vector-icons';
 
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppButton } from '@/components/ui/AppButton';
@@ -9,52 +10,54 @@ import { Card } from '@/components/ui/Card';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
 
-type PlanKey = 'silver' | 'gold' | 'platinum';
+type PlanKey = 'm1' | 'm3' | 'm6';
 
 type Plan = {
   key: PlanKey;
-  title: string;
-  durationLabel: string;
-  price: string;
-  badge?: { label: string };
-  sublabel?: string;
+  months: 1 | 3 | 6;
+  durationLabel: '1 month' | '3 months' | '6 months';
+  pricePerMonth: number;
+  saveLabel?: string;
+  bottomTag?: string;
 };
 
 const PLANS: Plan[] = [
   {
-    key: 'silver',
-    title: 'Silver+',
+    key: 'm1',
+    months: 1,
     durationLabel: '1 month',
-    price: '$19.99',
+    pricePerMonth: 19.99,
+    saveLabel: 'Basic',
   },
   {
-    key: 'gold',
-    title: 'Gold+',
+    key: 'm3',
+    months: 3,
     durationLabel: '3 months',
-    price: '$44.99',
-    badge: { label: 'Most Popular' },
-    sublabel: '25% off',
+    pricePerMonth: 14.99,
+    saveLabel: 'Save 25%',
   },
   {
-    key: 'platinum',
-    title: 'Platinum+',
+    key: 'm6',
+    months: 6,
     durationLabel: '6 months',
-    price: '$74.99',
-    badge: { label: 'Best Value' },
-    sublabel: '37% off',
+    pricePerMonth: 11.99,
+    saveLabel: 'Save 40%',
+    bottomTag: 'Most Popular',
   },
 ];
 
-const PERKS = [
-  'See who liked you',
-  'Advanced filters',
-  'Text read receipts',
-  'Match likes: 20/day',
-  'Pals likes: 40/day',
-  'Boost: 2/week',
-  'Rewind: Unlimited',
-  'Compliment: 5/week',
-  'Reset dislikes: 1/month',
+type ComparisonCell = 'x' | 'check' | string;
+
+const COMPARISON_ROWS: { feature: string; free: ComparisonCell; plus: ComparisonCell }[] = [
+  { feature: 'See who likes you', free: 'x', plus: 'check' },
+  { feature: 'Advanced dog filters', free: 'x', plus: 'check' },
+  { feature: 'Text read receipts', free: 'x', plus: 'check' },
+  { feature: 'Match Likes', free: '7/day', plus: '20/day' },
+  { feature: 'Pals Likes', free: '15/day', plus: '40/day' },
+  { feature: 'Rewinds', free: 'x', plus: 'Unlimited' },
+  { feature: 'Boosts', free: 'x', plus: '2/week' },
+  { feature: 'Compliments', free: 'x', plus: '5/week' },
+  { feature: 'Reset passes/skips', free: 'x', plus: '1/month' },
 ];
 
 function FaqItem({
@@ -89,9 +92,14 @@ function FaqItem({
 }
 
 export default function PlusScreen() {
-  const [selected, setSelected] = useState<PlanKey>('gold');
+  const [selected, setSelected] = useState<PlanKey>('m6');
+  const [showComparison, setShowComparison] = useState(false);
 
   const selectedPlan = useMemo(() => PLANS.find((p) => p.key === selected)!, [selected]);
+  const selectedTotal = useMemo(
+    () => Number((selectedPlan.pricePerMonth * selectedPlan.months).toFixed(2)),
+    [selectedPlan.months, selectedPlan.pricePerMonth]
+  );
 
   const handleUpgrade = () => {
     Alert.alert(
@@ -102,173 +110,336 @@ export default function PlusScreen() {
 
   return (
     <ScreenContainer>
-      <Stack.Screen options={{ title: 'Pawfectly +' }} />
+      <Stack.Screen options={{ title: 'Upgrade to Plus' }} />
 
-      <View style={styles.header}>
-        <AppText variant="heading" style={styles.title}>
-          Choose your plan
-        </AppText>
-        <AppText variant="body" style={styles.subtitle}>
-          Cancel anytime. Your plan works across devices.
-        </AppText>
-      </View>
-
-      <View style={styles.plansGrid}>
-        {PLANS.map((plan) => {
-          const isSelected = plan.key === selected;
-          return (
-            <TouchableOpacity
-              key={plan.key}
-              style={[styles.planTile, isSelected && styles.planTileSelected]}
-              onPress={() => setSelected(plan.key)}
-              activeOpacity={0.85}
-            >
-              {!!plan.badge && (
-                <View style={styles.planBadge}>
-                  <AppText variant="caption" style={styles.planBadgeText}>
-                    {plan.badge.label}
-                  </AppText>
-                </View>
-              )}
-              <AppText variant="heading" style={styles.planTitle}>
-                {plan.title}
-              </AppText>
-              <AppText variant="caption" style={styles.planDuration}>
-                {plan.durationLabel}
-              </AppText>
-              <AppText variant="heading" style={styles.planPrice}>
-                {plan.price}
-              </AppText>
-              {!!plan.sublabel && (
-                <AppText variant="caption" style={styles.planSublabel}>
-                  {plan.sublabel}
-                </AppText>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      <Card style={styles.perksCard}>
-        <AppText variant="heading" style={styles.perksTitle}>
-          What you get
-        </AppText>
-        <View style={styles.perksList}>
-          {PERKS.map((perk) => (
-            <View key={perk} style={styles.perkRow}>
-              <AppText variant="body" style={styles.perkCheck}>
-                ✓
-              </AppText>
-              <AppText variant="body" style={styles.perkText}>
-                {perk}
-              </AppText>
-            </View>
-          ))}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <AppText variant="body" style={styles.subtitle}>
+            Match faster, see who’s into you, and get more control.
+          </AppText>
         </View>
-      </Card>
 
-      <View style={styles.faqSection}>
-        <AppText variant="heading" style={styles.faqTitle}>
-          FAQs
-        </AppText>
-        <FaqItem
-          q="When will I be charged?"
-          a="You’ll be charged when billing is enabled and you confirm your purchase. Until then, this is a preview of the upgrade flow."
-        />
-        <FaqItem
-          q="How do I cancel?"
-          a="Once billing is enabled, you’ll be able to manage or cancel from Settings → Subscription."
-        />
-      </View>
+        {showComparison ? (
+          <Card style={styles.comparisonCard}>
+            <AppText variant="heading" style={styles.comparisonTitle}>
+              Perks
+            </AppText>
 
-      <View style={styles.cta}>
-        <AppButton variant="primary" onPress={handleUpgrade} style={styles.ctaButton}>
-          Upgrade to {selectedPlan.title}
-        </AppButton>
-      </View>
+            <View style={styles.tableHeaderRow}>
+              <AppText variant="caption" style={[styles.tableHeaderCell, styles.featureCell]}>
+                Perks
+              </AppText>
+              <View style={styles.valueCell}>
+                <AppText variant="caption" style={styles.tableHeaderCell}>
+                  Free
+                </AppText>
+              </View>
+              <View style={styles.valueCell}>
+                <AppText variant="caption" style={styles.tableHeaderCell}>
+                  Plus
+                </AppText>
+              </View>
+            </View>
+
+            <View style={styles.tableDivider} />
+
+            {COMPARISON_ROWS.map((row) => (
+              <View key={row.feature} style={styles.tableRow}>
+                <AppText variant="body" style={styles.featureCell}>
+                  {row.feature}
+                </AppText>
+                <View style={styles.valueCell}>
+                  {row.free === 'check' ? (
+                    <MaterialIcons name="check" size={18} color={stylesVars.yesGreen} />
+                  ) : row.free === 'x' ? (
+                    <MaterialIcons name="close" size={18} color={stylesVars.noGray} />
+                  ) : (
+                    <AppText variant="caption" style={styles.valueText}>
+                      {row.free}
+                    </AppText>
+                  )}
+                </View>
+                <View style={styles.valueCell}>
+                  {row.plus === 'check' ? (
+                    <MaterialIcons name="check" size={18} color={stylesVars.yesGreen} />
+                  ) : row.plus === 'x' ? (
+                    <MaterialIcons name="close" size={18} color={stylesVars.noGray} />
+                  ) : (
+                    <AppText variant="caption" style={styles.valueText}>
+                      {row.plus}
+                    </AppText>
+                  )}
+                </View>
+              </View>
+            ))}
+
+            <AppButton
+              variant="secondary"
+              onPress={() => setShowComparison(false)}
+              style={styles.seeWhatYouGetButton}
+            >
+              See what you get
+            </AppButton>
+          </Card>
+        ) : (
+          <Card style={styles.plusGivesYouCard}>
+            <AppText variant="heading" style={styles.plusGivesYouTitle}>
+              Plus gives you…
+            </AppText>
+            <View style={styles.plusGivesYouList}>
+              <View style={styles.plusGivesYouRow}>
+                <MaterialIcons name="check" size={18} color={stylesVars.yesGreen} />
+                <AppText variant="body" style={styles.plusGivesYouText}>
+                  Get matches faster (more likes + boosts)
+                </AppText>
+              </View>
+              <View style={styles.plusGivesYouRow}>
+                <MaterialIcons name="check" size={18} color={stylesVars.yesGreen} />
+                <AppText variant="body" style={styles.plusGivesYouText}>
+                  Value for likes (See who likes you)
+                </AppText>
+              </View>
+              <View style={styles.plusGivesYouRow}>
+                <MaterialIcons name="check" size={18} color={stylesVars.yesGreen} />
+                <AppText variant="body" style={styles.plusGivesYouText}>
+                  More control (rewinds + reset)
+                </AppText>
+              </View>
+            </View>
+
+            <AppButton
+              variant="secondary"
+              onPress={() => setShowComparison(true)}
+              style={styles.seeWhatYouGetButton}
+            >
+              See what you get
+            </AppButton>
+          </Card>
+        )}
+
+        <View style={styles.plansRow}>
+          {PLANS.map((plan) => {
+            const isSelected = plan.key === selected;
+            const pricePerMonthLabel = `$${plan.pricePerMonth.toFixed(2)}/mo`;
+
+            return (
+              <View key={plan.key} style={styles.planWrap}>
+                {!!plan.saveLabel && (
+                  <View style={[styles.planTopPill, isSelected && styles.planTopPillSelected]}>
+                    <AppText variant="caption" style={styles.planTopPillText}>
+                      {plan.saveLabel}
+                    </AppText>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.planTile, isSelected && styles.planTileSelected]}
+                  onPress={() => setSelected(plan.key)}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.planMain}>
+                    <AppText variant="body" style={styles.planDurationHeading} numberOfLines={1}>
+                      {plan.durationLabel}
+                    </AppText>
+                    <AppText variant="caption" style={styles.planPricePerMonth}>
+                      {pricePerMonthLabel}
+                    </AppText>
+                  </View>
+                </TouchableOpacity>
+
+                {!!plan.bottomTag && (
+                  <View style={styles.planBottomPill}>
+                    <AppText variant="caption" style={styles.planBottomPillText}>
+                      {plan.bottomTag}
+                    </AppText>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={styles.cta}>
+          <AppButton variant="primary" onPress={handleUpgrade} style={styles.ctaButton}>
+            Get {selectedPlan.months} month{selectedPlan.months === 1 ? '' : 's'} for ${selectedTotal}
+          </AppButton>
+        </View>
+
+        <View style={styles.faqSection}>
+          <AppText variant="heading" style={styles.faqTitle}>
+            FAQs
+          </AppText>
+          <FaqItem
+            q="When will I be charged?"
+            a="You’ll be charged when billing is enabled and you confirm your purchase. Until then, this is a preview of the upgrade flow."
+          />
+          <FaqItem
+            q="How do I cancel?"
+            a="Once billing is enabled, you’ll be able to manage or cancel from Settings → Subscription."
+          />
+        </View>
+      </ScrollView>
     </ScreenContainer>
   );
 }
 
+const stylesVars = {
+  yesGreen: '#22C55E',
+  noGray: 'rgba(31, 41, 55, 0.45)',
+} as const;
+
 const styles = StyleSheet.create({
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: Spacing.xxl,
+  },
   header: {
     paddingTop: Spacing.lg,
     paddingBottom: Spacing.lg,
   },
-  title: {
-    marginBottom: Spacing.xs,
-  },
   subtitle: {
     opacity: 0.75,
   },
-  plansGrid: {
-    gap: Spacing.md,
+  plansRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
     marginBottom: Spacing.xl,
+  },
+  planWrap: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  planTopPill: {
+    marginBottom: -10,
+    zIndex: 2,
+    elevation: 2,
+    backgroundColor: Colors.background,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(31, 41, 55, 0.12)',
+  },
+  planTopPillSelected: {
+    borderColor: Colors.primary,
+  },
+  planTopPillText: {
+    fontWeight: '800',
+    fontSize: 10,
+    color: Colors.text,
   },
   planTile: {
     backgroundColor: 'rgba(31, 41, 55, 0.05)',
     borderRadius: 16,
-    padding: Spacing.lg,
+    padding: Spacing.md,
     position: 'relative',
     borderWidth: 1,
     borderColor: 'transparent',
+    width: '100%',
+    minHeight: 132,
+    justifyContent: 'space-between',
   },
   planTileSelected: {
     borderColor: Colors.primary,
     backgroundColor: Colors.primary + '10',
   },
-  planBadge: {
-    position: 'absolute',
-    top: Spacing.md,
-    right: Spacing.md,
+  planMain: {
+    gap: 2,
+    alignItems: 'center',
+  },
+  planDurationHeading: {
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  planPricePerMonth: {
+    textAlign: 'center',
+    opacity: 0.75,
+    fontWeight: '700',
+  },
+  planBottomPill: {
+    marginTop: -10,
+    zIndex: 2,
+    elevation: 2,
     backgroundColor: Colors.primary,
     borderRadius: 999,
-    paddingHorizontal: Spacing.md,
+    paddingHorizontal: Spacing.sm,
     paddingVertical: 6,
   },
-  planBadgeText: {
+  planBottomPillText: {
     color: Colors.background,
-    fontWeight: '700',
-    fontSize: 11,
+    fontWeight: '800',
+    fontSize: 10,
   },
-  planTitle: {
-    marginBottom: 4,
-  },
-  planDuration: {
-    opacity: 0.7,
-    marginBottom: Spacing.md,
-  },
-  planPrice: {
-    color: Colors.primary,
-  },
-  planSublabel: {
-    marginTop: 4,
-    opacity: 0.75,
-    fontWeight: '600',
-  },
-  perksCard: {
+  plusGivesYouCard: {
     marginBottom: Spacing.xl,
   },
-  perksTitle: {
+  plusGivesYouTitle: {
     marginBottom: Spacing.md,
   },
-  perksList: {
+  plusGivesYouList: {
     gap: Spacing.sm,
+    marginBottom: Spacing.md,
   },
-  perkRow: {
+  plusGivesYouRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  perkCheck: {
-    color: Colors.primary,
-    fontWeight: '800',
-    width: 18,
-    textAlign: 'center',
-  },
-  perkText: {
+  plusGivesYouText: {
     flex: 1,
     opacity: 0.9,
+  },
+  seeWhatYouGetButton: {
+    width: '100%',
+  },
+  comparisonTop: {
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  comparisonCard: {
+    marginBottom: Spacing.xl,
+  },
+  comparisonTitle: {
+    marginBottom: 0,
+  },
+  tableHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  tableHeaderCell: {
+    opacity: 0.7,
+    fontWeight: '700',
+  },
+  tableDivider: {
+    height: 1,
+    backgroundColor: 'rgba(31, 41, 55, 0.10)',
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  featureCell: {
+    flex: 1,
+    paddingRight: Spacing.md,
+  },
+  valueCell: {
+    width: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  valueText: {
+    opacity: 0.8,
+    fontWeight: '700',
   },
   faqSection: {
     gap: Spacing.sm,
@@ -303,7 +474,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   cta: {
-    paddingBottom: Spacing.xl,
+    paddingTop: Spacing.sm,
+    marginBottom: Spacing.xl,
   },
   ctaButton: {
     width: '100%',

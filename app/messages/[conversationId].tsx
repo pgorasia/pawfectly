@@ -24,6 +24,7 @@ import {
   ScrollView,
   Image,
   Keyboard,
+  InteractionManager,
 } from 'react-native';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -35,6 +36,7 @@ import { FullProfileView } from '@/components/profile/FullProfileView';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/services/supabase/supabaseClient';
 import {
   getConversationMessages,
   sendMessage,
@@ -46,6 +48,7 @@ import {
   rejectRequest,
   type ConversationMessageDTO,
   type ConversationMessagesCursor,
+  type ConversationReadReceipt,
 } from '@/services/messages/messagesService';
 import { submitSwipe } from '@/services/feed/feedService';
 import { getProfileView } from '@/services/feed/feedService';
@@ -118,7 +121,29 @@ function mergeMessages(existing: ChatMessage[], serverMessages: ChatMessage[]): 
   return Array.from(map.values()).sort((a, b) => +a.timestamp - +b.timestamp);
 }
 
-function MessageBubble({ message, onRetry }: { message: ChatMessage; onRetry?: () => void }) {
+type LastOutgoingReceiptStatus = 'delivered' | 'seen' | null;
+
+function MessageBubble({
+  message,
+  onRetry,
+  receiptStatus,
+}: {
+  message: ChatMessage;
+  onRetry?: () => void;
+  receiptStatus?: LastOutgoingReceiptStatus;
+}) {
+  const showReceipt =
+    message.isMe && !message.isPending && !message.hasError && receiptStatus != null;
+
+  // WhatsApp-style for this feature: always show double-tick on the last outgoing message.
+  // Green only when seen (paid).
+  const receiptIcon = 'done-all';
+
+  const receiptColor =
+    receiptStatus === 'seen'
+      ? Colors.primary
+      : Colors.text;
+
   return (
     <View style={[styles.messageBubbleContainer, message.isMe && styles.myMessageContainer]}>
       <View
@@ -144,6 +169,14 @@ function MessageBubble({ message, onRetry }: { message: ChatMessage; onRetry?: (
         <AppText variant="caption" style={styles.messageTime}>
           {message.hasError ? 'Failed to send' : formatMessageTime(message.timestamp)}
         </AppText>
+        {showReceipt && (
+          <MaterialIcons
+            name={receiptIcon as any}
+            size={14}
+            color={receiptColor}
+            style={[styles.receiptIcon, receiptStatus === 'delivered' && { opacity: 0.55 }]}
+          />
+        )}
         {message.hasError && onRetry && (
           <TouchableOpacity onPress={onRetry} style={styles.retryButton}>
             <AppText variant="caption" style={styles.retryText}>
@@ -198,6 +231,7 @@ export default function ChatThreadScreen() {
   const [showMenu, setShowMenu] = useState(false);
   const [nextCursor, setNextCursor] = useState<ConversationMessagesCursor>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [readReceipt, setReadReceipt] = useState<ConversationReadReceipt>(null);
 
   // Profile state
   const [profileData, setProfileData] = useState<ProfileViewPayload | null>(null);
@@ -210,6 +244,19 @@ export default function ChatThreadScreen() {
   const inputRef = useRef<TextInput>(null);
   const hasMarkedRead = useRef(false);
   const initialMessageCount = useRef<number>(0); // Track original message count before any sends
+  const hasAutoScrolledToBottom = useRef(false);
+  const isAtBottomRef = useRef(true);
+  const pendingInitialBottomScrollRef = useRef(false);
+  const hasDoneInitialLayoutScrollRef = useRef(false);
+  const lastRenderedMessageIdRef = useRef<string | null>(null);
+
+  const scrollToBottom = useCallback((animated: boolean) => {
+    InteractionManager.runAfterInteractions(() => {
+      requestAnimationFrame(() => {
+        flatListRef.current?.scrollToEnd({ animated });
+      });
+    });
+  }, []);
 
   // Use peer info from route params, with fallbacks
   const displayName = peerName || 'User';
@@ -258,8 +305,16 @@ export default function ChatThreadScreen() {
         // Merge with existing messages (dedupes by id, server wins)
         setMessages((prev) => mergeMessages(prev, serverMessages));
         setNextCursor(result.nextCursor);
+        setReadReceipt(result.readReceipt ?? null);
 
         setLoading(false);
+
+        // Requirement: when chat loads, auto-scroll to bottom.
+        // Keyboard + layout timing can otherwise leave us slightly above bottom.
+        pendingInitialBottomScrollRef.current = true;
+        hasAutoScrolledToBottom.current = true;
+        scrollToBottom(false);
+        setTimeout(() => scrollToBottom(false), 150);
       } catch (error) {
         console.error('[ChatThread] Failed to load messages:', error);
         Alert.alert('Error', 'Failed to load messages. Please try again.');
@@ -269,6 +324,131 @@ export default function ChatThreadScreen() {
 
     loadInitialMessages();
   }, [conversationId, user?.id]);
+
+  // Single, non-jittery scroll controller:
+  // - After initial layout: force bottom once.
+  // - After that: only auto-scroll when user is already at bottom and a new message arrives.
+  useEffect(() => {
+    const last = messages.length ? messages[messages.length - 1] : null;
+    const lastId = last ? String(last.id) : null;
+
+    // Track last rendered id for debug and to avoid repeated scrolls.
+    if (lastId && lastRenderedMessageIdRef.current !== lastId) {
+      lastRenderedMessageIdRef.current = lastId;
+
+      if (isAtBottomRef.current && !pendingInitialBottomScrollRef.current) {
+        scrollToBottom(true);
+      }
+    }
+  }, [messages, scrollToBottom]);
+
+  // Realtime: live new messages (no refresh needed)
+  useEffect(() => {
+    if (!conversationId || !user?.id) return;
+
+    const channel = supabase
+      .channel(`conversation_messages:${conversationId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'conversation_messages',
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        async (payload) => {
+          if (__DEV__) {
+            console.log('[ChatThread][realtime] conversation_messages INSERT payload:', payload);
+          }
+          const row = payload.new as any;
+          if (!row?.id || !row?.created_at) return;
+
+          const dto: ConversationMessageDTO = {
+            id: String(row.id),
+            sender_id: row.sender_id,
+            kind: row.kind,
+            body: row.body,
+            metadata: row.metadata,
+            created_at: row.created_at,
+          };
+
+          const chatMsg = convertToChatMessage(dto, user.id);
+          setMessages((prev) => mergeMessages(prev, [chatMsg]));
+
+          // Track that the conversation is no longer empty after first realtime message.
+          if (initialMessageCount.current === 0) {
+            initialMessageCount.current = 1;
+          }
+
+          // If I'm currently at the bottom and viewing the chat tab, mark read for incoming.
+          if (row.sender_id !== user.id && activeTab === 'chat' && isAtBottomRef.current) {
+            await markConversationRead(conversationId);
+          }
+
+          // Auto-scroll only if user is already at bottom.
+          if (isAtBottomRef.current) {
+            scrollToBottom(true);
+          }
+        }
+      )
+      .subscribe((status) => {
+        if (__DEV__) {
+          console.log('[ChatThread][realtime] conversation_messages subscribe status:', status);
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [conversationId, user?.id, activeTab, scrollToBottom]);
+
+  // Realtime: live receipt updates (Plus only) without leaking to free users.
+  // We infer "plus" by whether the server returned readReceipt != null.
+  useEffect(() => {
+    if (!conversationId || !user?.id) return;
+    if (readReceipt == null) return;
+
+    const channel = supabase
+      .channel(`conversation_read_receipts:${conversationId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'conversation_read_receipts',
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        (payload) => {
+          if (__DEV__) {
+            console.log('[ChatThread][realtime] conversation_read_receipts change payload:', payload);
+          }
+          const row = payload.new as any;
+          if (!row?.user_id || row.user_id === user.id) return;
+
+          setReadReceipt((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  other_last_read_at: row.last_read_at ?? null,
+                }
+              : prev
+          );
+
+          if (isAtBottomRef.current) {
+            scrollToBottom(false);
+          }
+        }
+      )
+      .subscribe((status) => {
+        if (__DEV__) {
+          console.log('[ChatThread][realtime] conversation_read_receipts subscribe status:', status);
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [conversationId, user?.id, readReceipt, scrollToBottom]);
 
   // B) Load older messages for pagination
   const loadOlderMessages = useCallback(async () => {
@@ -332,6 +512,10 @@ export default function ChatThreadScreen() {
   useEffect(() => {
     const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
       setIsKeyboardVisible(true);
+      if (pendingInitialBottomScrollRef.current) {
+        pendingInitialBottomScrollRef.current = false;
+        scrollToBottom(false);
+      }
     });
     const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
       setIsKeyboardVisible(false);
@@ -433,6 +617,17 @@ export default function ChatThreadScreen() {
     if (data) {
       setMessages((prev) =>
         prev.map((msg) => (msg.id === clientMessageId ? { ...msg, id: data.message_id, isPending: false } : msg))
+      );
+
+      // Keep receipt state consistent for Plus users without an extra fetch:
+      // after sending, the "last message" is ours, but server receipt payload we fetched earlier may be stale.
+      setReadReceipt((prev) =>
+        prev
+          ? {
+              ...prev,
+              other_last_read_at: prev.other_last_read_at ?? null,
+            }
+          : prev
       );
 
       // Only emit FIRST_MESSAGE_SENT event if this was the first message and we have peer info
@@ -775,6 +970,20 @@ export default function ChatThreadScreen() {
   const systemBarSpacerHeight = Math.max(insets.bottom, 0);
   const systemBarSpacerColor = Platform.OS === 'android' ? '#000000' : Colors.background;
 
+  const lastOutgoingMessage = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.isMe && !m.isPending && !m.hasError) return m;
+    }
+    return null;
+  }, [messages]);
+
+  const isLastOutgoingSeen = React.useMemo(() => {
+    if (!lastOutgoingMessage) return false;
+    if (!readReceipt?.other_last_read_at) return false;
+    return new Date(readReceipt.other_last_read_at).getTime() >= lastOutgoingMessage.timestamp.getTime();
+  }, [lastOutgoingMessage, readReceipt?.other_last_read_at]);
+
   return (
     // Use only TOP safe-area here.
     // Bottom is handled explicitly so action bars can sit flush above a consistent
@@ -913,14 +1122,40 @@ export default function ChatThreadScreen() {
                 ref={flatListRef}
                 data={messages}
                 keyExtractor={(item) => String(item.id)}
-                renderItem={({ item }) => (
-                  <MessageBubble
-                    message={item}
-                    onRetry={item.hasError ? () => handleRetry(item.id) : undefined}
-                  />
-                )}
+                renderItem={({ item }) => {
+                  const isLastOutgoing = lastOutgoingMessage?.id === item.id;
+
+                  const receiptStatus: LastOutgoingReceiptStatus = isLastOutgoing
+                    ? isLastOutgoingSeen
+                      ? 'seen'
+                      : 'delivered'
+                    : null;
+
+                  return (
+                    <MessageBubble
+                      message={item}
+                      onRetry={item.hasError ? () => handleRetry(item.id) : undefined}
+                      receiptStatus={receiptStatus}
+                    />
+                  );
+                }}
                 contentContainerStyle={styles.messagesList}
-                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+                onLayout={() => {
+                  // Do the "initial bottom" exactly once after first layout.
+                  if (!hasDoneInitialLayoutScrollRef.current) {
+                    hasDoneInitialLayoutScrollRef.current = true;
+                    pendingInitialBottomScrollRef.current = false;
+                    scrollToBottom(false);
+                    return;
+                  }
+                }}
+                onScroll={(e) => {
+                  const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+                  const paddingToBottom = 24;
+                  isAtBottomRef.current =
+                    layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+                }}
+                scrollEventThrottle={16}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="interactive"
                 ListHeaderComponent={
@@ -1248,6 +1483,9 @@ const styles = StyleSheet.create({
   messageTime: {
     fontSize: 11,
     opacity: 0.5,
+  },
+  receiptIcon: {
+    marginTop: 1,
   },
   retryButton: {
     paddingHorizontal: Spacing.xs,
