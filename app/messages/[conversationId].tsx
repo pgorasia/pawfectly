@@ -35,6 +35,7 @@ import { AppText } from '@/components/ui/AppText';
 import { FullProfileView } from '@/components/profile/FullProfileView';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/services/supabase/supabaseClient';
 import {
@@ -991,6 +992,7 @@ export default function ChatThreadScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <Stack.Screen
         options={{
+          ...DEFAULT_HEADER_OPTIONS,
           headerShown: true,
           headerBackTitle: 'Back',
           headerTitle: () => (

@@ -70,10 +70,10 @@ export const ResetDislikesModal: React.FC<ResetDislikesModalProps> = ({
       <View style={styles.overlay}>
         <View style={styles.modalContent}>
           <AppText variant="heading" style={styles.title}>
-            Reset Dislikes
+            Reset passes/skips
           </AppText>
           <AppText variant="body" style={styles.subtitle}>
-            Select which lanes you want to reset dislikes for:
+            Select which lanes you want to reset passes/skips for:
           </AppText>
 
           <View style={styles.checkboxContainer}>
@@ -95,7 +95,7 @@ export const ResetDislikesModal: React.FC<ResetDislikesModalProps> = ({
                     Pawsome Pals
                   </AppText>
                   <AppText variant="caption" style={styles.checkboxSubtitle}>
-                    Reset dislikes for the pals lane
+                    Reset passes/skips for the pals lane
                   </AppText>
                 </View>
               </TouchableOpacity>
@@ -119,7 +119,7 @@ export const ResetDislikesModal: React.FC<ResetDislikesModalProps> = ({
                     Pawfect Match
                   </AppText>
                   <AppText variant="caption" style={styles.checkboxSubtitle}>
-                    Reset dislikes for the match lane
+                    Reset passes/skips for the match lane
                   </AppText>
                 </View>
               </TouchableOpacity>

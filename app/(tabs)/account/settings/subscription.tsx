@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { View, StyleSheet, ScrollView, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppText } from '@/components/ui/AppText';
@@ -7,173 +7,104 @@ import { AppButton } from '@/components/ui/AppButton';
 import { Card } from '@/components/ui/Card';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
-
-interface SubscriptionPlan {
-  id: string;
-  name: string;
-  duration: string;
-  price: string;
-  features: string[];
-  popular?: boolean;
-}
-
-const PLANS: SubscriptionPlan[] = [
-  {
-    id: '1-month',
-    name: '1 Month',
-    duration: '1 month',
-    price: '$9.99',
-    features: [
-      'See who liked you',
-      'Unlimited swipes',
-      'Advanced filters',
-      'Read receipts',
-    ],
-  },
-  {
-    id: '3-months',
-    name: '3 Months',
-    duration: '3 months',
-    price: '$24.99',
-    features: [
-      'See who liked you',
-      'Unlimited swipes',
-      'Advanced filters',
-      'Read receipts',
-      'Priority support',
-    ],
-    popular: true,
-  },
-  {
-    id: '6-months',
-    name: '6 Months',
-    duration: '6 months',
-    price: '$39.99',
-    features: [
-      'See who liked you',
-      'Unlimited swipes',
-      'Advanced filters',
-      'Read receipts',
-      'Priority support',
-      'Profile boost',
-    ],
-  },
-];
+import { useMySubscription } from '@/hooks/useMySubscription';
+import { useMyEntitlements } from '@/hooks/useMyEntitlements';
+import { isEntitlementActive } from '@/services/entitlements/entitlementsService';
+import { cancelMySubscription } from '@/services/billing/subscriptionService';
 
 export default function SubscriptionScreen() {
   const router = useRouter();
-  const [currentPlan, setCurrentPlan] = useState<string | null>('3-months'); // Mock current plan
+  const { data: subscription, loading: loadingSubscription, refresh: refreshSubscription } = useMySubscription();
+  const { data: entitlements, loading: loadingEntitlements, refresh: refreshEntitlements } = useMyEntitlements();
+  const [cancelling, setCancelling] = useState(false);
 
-  const handleSubscribe = (planId: string) => {
-    Alert.alert(
-      'Subscribe',
-      `Subscribe to ${PLANS.find((p) => p.id === planId)?.name} plan?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Subscribe',
-          onPress: () => {
-            // In production, this would call a payment API
-            setCurrentPlan(planId);
-            Alert.alert('Success', 'Subscription updated successfully!');
-          },
-        },
-      ]
-    );
-  };
+  const isPlus = isEntitlementActive(entitlements, 'plus');
+
+  const periodEndLabel = useMemo(() => {
+    if (!subscription?.current_period_end) return null;
+    const ts = new Date(subscription.current_period_end).getTime();
+    if (!Number.isFinite(ts)) return null;
+    return new Date(ts).toLocaleDateString();
+  }, [subscription?.current_period_end]);
+
+  const statusLabel = useMemo(() => {
+    if (!subscription) return null;
+    if (subscription.status !== 'active') return 'Expired';
+    if (subscription.cancel_at_period_end || !subscription.auto_renews) {
+      return periodEndLabel ? `Active • Ends ${periodEndLabel}` : 'Active • Ends soon';
+    }
+    return periodEndLabel ? `Active • Renews ${periodEndLabel}` : 'Active • Renews soon';
+  }, [periodEndLabel, subscription]);
 
   const handleCancelSubscription = () => {
-    Alert.alert(
-      'Cancel Subscription',
-      'Are you sure you want to cancel your subscription?',
-      [
-        { text: 'No', style: 'cancel' },
-        {
-          text: 'Yes, Cancel',
-          style: 'destructive',
-          onPress: () => {
-            setCurrentPlan(null);
-            Alert.alert('Cancelled', 'Your subscription has been cancelled.');
-          },
+    if (cancelling) return;
+    Alert.alert('Cancel subscription', 'You’ll keep Plus benefits until the end of the paid period.', [
+      { text: 'Nevermind', style: 'cancel' },
+      {
+        text: 'Cancel subscription',
+        style: 'destructive',
+        onPress: async () => {
+          setCancelling(true);
+          try {
+            const res = await cancelMySubscription();
+            if (!res.ok) {
+              Alert.alert('Error', res.error || 'Failed to cancel. Please try again.');
+              return;
+            }
+            await Promise.allSettled([refreshEntitlements(), refreshSubscription()]);
+            Alert.alert('Cancelled', 'Your subscription will stop renewing at the end of the current period.');
+          } catch (e: any) {
+            console.error('[SubscriptionScreen] cancel failed:', e);
+            Alert.alert('Error', e?.message || 'Failed to cancel. Please try again.');
+          } finally {
+            setCancelling(false);
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   return (
     <ScreenContainer>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        {currentPlan && (
+        {isPlus && subscription?.status === 'active' && (
           <View style={styles.currentPlanSection}>
             <AppText variant="body" style={styles.currentPlanLabel}>
-              Current Plan
+              Current plan
             </AppText>
             <AppText variant="heading" style={styles.currentPlanName}>
-              {PLANS.find((p) => p.id === currentPlan)?.name}
+              Pawfectly+
             </AppText>
             <AppText variant="caption" style={styles.currentPlanPrice}>
-              {PLANS.find((p) => p.id === currentPlan)?.price} / {PLANS.find((p) => p.id === currentPlan)?.duration}
+              {statusLabel || 'Active'}
             </AppText>
             <AppButton
               variant="ghost"
               onPress={handleCancelSubscription}
               style={styles.cancelButton}
+              disabled={cancelling || subscription.cancel_at_period_end || !subscription.auto_renews}
             >
-              Cancel Subscription
+              {subscription.cancel_at_period_end || !subscription.auto_renews ? 'Cancellation scheduled' : 'Cancel subscription'}
             </AppButton>
           </View>
         )}
 
-        <View style={styles.plansSection}>
+        <Card style={styles.plansSection}>
           <AppText variant="heading" style={styles.sectionTitle}>
-            Choose a Plan
+            Subscription
           </AppText>
-          {PLANS.map((plan) => {
-            const isCurrentPlan = currentPlan === plan.id;
-            return (
-              <Card key={plan.id} style={[styles.planCard, plan.popular && styles.planCardPopular]}>
-                {plan.popular && (
-                  <View style={styles.popularBadge}>
-                    <AppText variant="caption" style={styles.popularBadgeText}>
-                      Most Popular
-                    </AppText>
-                  </View>
-                )}
-                <View style={styles.planHeader}>
-                  <AppText variant="heading" style={styles.planName}>
-                    {plan.name}
-                  </AppText>
-                  <AppText variant="heading" style={styles.planPrice}>
-                    {plan.price}
-                  </AppText>
-                </View>
-                <AppText variant="caption" style={styles.planDuration}>
-                  {plan.duration}
-                </AppText>
-                <View style={styles.featuresList}>
-                  {plan.features.map((feature, index) => (
-                    <View key={index} style={styles.featureItem}>
-                      <AppText variant="caption" style={styles.checkmark}>
-                        ✓
-                      </AppText>
-                      <AppText variant="caption" style={styles.featureText}>
-                        {feature}
-                      </AppText>
-                    </View>
-                  ))}
-                </View>
-                <AppButton
-                  variant={isCurrentPlan ? 'ghost' : 'primary'}
-                  onPress={() => handleSubscribe(plan.id)}
-                  style={styles.subscribeButton}
-                  disabled={isCurrentPlan}
-                >
-                  {isCurrentPlan ? 'Current Plan' : 'Subscribe'}
-                </AppButton>
-              </Card>
-            );
-          })}
-        </View>
+          <AppText variant="body" style={{ opacity: 0.8, marginBottom: Spacing.md }}>
+            Renews automatically. Cancel anytime in Settings.
+          </AppText>
+          <AppButton
+            variant="primary"
+            onPress={() => router.push('/(tabs)/account/plus')}
+            disabled={loadingSubscription || loadingEntitlements}
+            style={styles.subscribeButton}
+          >
+            {isPlus ? 'View plans' : 'Upgrade to Plus'}
+          </AppButton>
+        </Card>
       </ScrollView>
     </ScreenContainer>
   );
@@ -210,64 +141,10 @@ const styles = StyleSheet.create({
   },
   plansSection: {
     marginBottom: Spacing.xl,
+    padding: Spacing.lg,
   },
   sectionTitle: {
-    marginBottom: Spacing.lg,
-  },
-  planCard: {
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
-    position: 'relative',
-  },
-  planCardPopular: {
-    borderWidth: 2,
-    borderColor: Colors.primary,
-  },
-  popularBadge: {
-    position: 'absolute',
-    top: -10,
-    right: Spacing.lg,
-    backgroundColor: Colors.primary,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: 12,
-  },
-  popularBadgeText: {
-    color: Colors.background,
-    fontWeight: '600',
-    fontSize: 10,
-  },
-  planHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.xs,
-  },
-  planName: {
-    flex: 1,
-  },
-  planPrice: {
-    color: Colors.primary,
-  },
-  planDuration: {
-    opacity: 0.7,
-    marginBottom: Spacing.md,
-  },
-  featuresList: {
-    marginBottom: Spacing.lg,
-  },
-  featureItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: Spacing.xs,
-  },
-  checkmark: {
-    color: Colors.primary,
-    marginRight: Spacing.sm,
-    fontWeight: 'bold',
-  },
-  featureText: {
-    opacity: 0.8,
+    marginBottom: Spacing.sm,
   },
   subscribeButton: {
     width: '100%',

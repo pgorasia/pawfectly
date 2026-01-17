@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 
 export default function ProfileLayout() {
   return (
@@ -7,6 +8,7 @@ export default function ProfileLayout() {
         headerShown: true,
         headerBackTitle: 'Back',
         presentation: 'card',
+        ...DEFAULT_HEADER_OPTIONS,
       }}
     >
       <Stack.Screen

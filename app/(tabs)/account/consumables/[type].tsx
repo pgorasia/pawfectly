@@ -8,10 +8,12 @@ import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 import { ResetDislikesModal } from '@/components/account/ResetDislikesModal';
 import { useMe } from '@/contexts/MeContext';
 import { clearDislikeOutbox, markLanesForRefresh, resetDislikes } from '@/services/feed/feedService';
 import { useMyConsumables } from '@/hooks/useMyConsumables';
+import { consumeMyConsumable, purchaseConsumable } from '@/services/consumables/consumablesService';
 
 type ConsumableType = 'boost' | 'rewind' | 'compliment' | 'reset-dislikes';
 
@@ -78,14 +80,14 @@ const DEFINITIONS: Record<ConsumableType, Definition> = {
     ],
   },
   'reset-dislikes': {
-    title: 'Reset dislikes',
-    description: 'Clear your rejected profiles so you can see them again.',
+    title: 'Reset passes/skips',
+    description: 'See profiles you passed or skipped again.',
     notes: 'This action affects your feed lanes and may take a moment to refresh.',
     options: [{ id: 'one', label: '1 Reset', price: '$4.99' }],
     faq: [
       {
         q: 'What happens after I reset?',
-        a: 'Your feed will refresh automatically and previously rejected profiles may reappear.',
+        a: 'Your feed will refresh automatically and previously passed profiles may reappear.',
       },
     ],
     supportsImmediateUse: true,
@@ -129,9 +131,10 @@ export default function ConsumableScreen() {
 
   // Reset dislikes flow (existing production logic; moved out of Settings)
   const { me } = useMe();
-  const { byType } = useMyConsumables();
+  const { byType, refresh: refreshConsumables } = useMyConsumables();
   const [showResetDislikesModal, setShowResetDislikesModal] = useState(false);
   const [resettingDislikes, setResettingDislikes] = useState(false);
+  const [purchasing, setPurchasing] = useState(false);
 
   const handleResetDislikes = async (lanes: Array<'pals' | 'match'>) => {
     if (resettingDislikes) return;
@@ -141,6 +144,14 @@ export default function ConsumableScreen() {
       await clearDislikeOutbox(lanes);
       await resetDislikes(lanes);
       await markLanesForRefresh(lanes);
+
+      // Track usage (consumes included first, then purchased)
+      try {
+        await consumeMyConsumable('reset_dislikes', 1);
+        await refreshConsumables();
+      } catch (e) {
+        console.error('[ConsumableScreen] Failed to consume reset_dislikes:', e);
+      }
 
       setShowResetDislikesModal(false);
       Alert.alert('Success', 'Dislikes have been reset. The feed will refresh automatically.', [
@@ -163,6 +174,42 @@ export default function ConsumableScreen() {
     }
   };
 
+  const apiType = useMemo(() => {
+    if (type === 'reset-dislikes') return 'reset_dislikes';
+    return type as any;
+  }, [type]);
+
+  const selectedQuantity = useMemo(() => {
+    if (!selectedOption?.id) return 0;
+    const n = Number(selectedOption.id);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    if (selectedOption.id === 'one') return 1;
+    return 0;
+  }, [selectedOption?.id]);
+
+  const handlePurchase = async () => {
+    if (purchasing) return;
+    if (!apiType || !selectedQuantity) {
+      Alert.alert('Not available', 'This purchase option is not supported yet.');
+      return;
+    }
+    setPurchasing(true);
+    try {
+      const res = await purchaseConsumable(apiType, selectedQuantity);
+      if (!res.ok) {
+        Alert.alert('Purchase failed', res.error || 'Please try again.');
+        return;
+      }
+      await refreshConsumables();
+      Alert.alert('Purchased', `Added ${selectedOption?.label || ''}.`);
+    } catch (e: any) {
+      console.error('[ConsumableScreen] purchase failed:', e);
+      Alert.alert('Purchase failed', e?.message || 'Please try again.');
+    } finally {
+      setPurchasing(false);
+    }
+  };
+
   const title = def?.title ?? 'Consumable';
 
   const selectedOption = useMemo(
@@ -170,10 +217,16 @@ export default function ConsumableScreen() {
     [def?.options, selectedOptionId]
   );
 
+  const currentBalance = useMemo(() => {
+    const key = type === 'reset-dislikes' ? 'reset_dislikes' : (type as any);
+    const row = byType(key);
+    return row?.balance ?? 0;
+  }, [byType, type]);
+
   if (!def) {
     return (
       <ScreenContainer>
-        <Stack.Screen options={{ title: 'Consumable' }} />
+        <Stack.Screen options={{ ...DEFAULT_HEADER_OPTIONS, title: 'Consumable' }} />
         <View style={{ paddingTop: Spacing.lg }}>
           <AppText variant="heading">Not found</AppText>
           <AppText variant="body" style={{ opacity: 0.75, marginTop: Spacing.sm }}>
@@ -186,7 +239,7 @@ export default function ConsumableScreen() {
 
   return (
     <ScreenContainer>
-      <Stack.Screen options={{ title }} />
+      <Stack.Screen options={{ ...DEFAULT_HEADER_OPTIONS, title }} />
 
       <View style={styles.header}>
         <AppText variant="heading" style={styles.title}>
@@ -254,33 +307,36 @@ export default function ConsumableScreen() {
 
       <View style={styles.cta}>
         {type === 'reset-dislikes' ? (
-          <AppButton
-            variant="primary"
-            onPress={() => {
-              const row = byType('reset_dislikes');
-              if (!row || row.balance <= 0) {
-                Alert.alert('Purchase required', 'You need at least 1 reset to use this feature.');
-                return;
-              }
-              setShowResetDislikesModal(true);
-            }}
-            disabled={resettingDislikes}
-            style={styles.ctaButton}
-          >
-            Reset dislikes
-          </AppButton>
+          (() => {
+            const row = byType('reset_dislikes');
+            const hasBalance = (row?.balance ?? 0) > 0;
+            return (
+              <AppButton
+                variant="primary"
+                onPress={() => {
+                  if (!hasBalance) {
+                    handlePurchase().catch(() => {});
+                    return;
+                  }
+                  setShowResetDislikesModal(true);
+                }}
+                disabled={resettingDislikes || purchasing}
+                style={styles.ctaButton}
+              >
+                {hasBalance ? 'Reset dislikes' : `Buy ${selectedOption?.label ?? '1 Reset'}`}
+              </AppButton>
+            );
+          })()
         ) : (
           <AppButton
             variant="primary"
             onPress={() => {
-              Alert.alert(
-                'Coming soon',
-                'Purchases are not enabled yet. This screen is ready to be wired into RevenueCat (or equivalent) once billing is implemented.'
-              );
+              handlePurchase().catch(() => {});
             }}
             style={styles.ctaButton}
+            disabled={purchasing || currentBalance > 0}
           >
-            Purchase {selectedOption?.label ?? ''}
+            {currentBalance > 0 ? `You have ${currentBalance} left` : `Purchase ${selectedOption?.label ?? ''}`}
           </AppButton>
         )}
       </View>

@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Alert, Modal, ScrollView, StyleSheet, Switch, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
 import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -20,6 +20,9 @@ import { supabase } from '@/services/supabase/supabaseClient';
 import { publicPhotoUrl } from '@/utils/photoUrls';
 import { useMyConsumables } from '@/hooks/useMyConsumables';
 import { MyBadgesInline } from '@/components/account/MyBadges';
+import { useMyEntitlements } from '@/hooks/useMyEntitlements';
+import { isEntitlementActive } from '@/services/entitlements/entitlementsService';
+import { useMySubscription } from '@/hooks/useMySubscription';
 
 type AccountHomeTab = 'upgrades' | 'trust_safety';
 
@@ -123,7 +126,28 @@ function ConsumableBadge({ count }: { count: number }) {
 
 function UpgradesTab() {
   const router = useRouter();
-  const { byType } = useMyConsumables();
+  const { byType, refresh: refreshConsumables } = useMyConsumables();
+  const { data: entitlements, refresh: refreshEntitlements } = useMyEntitlements();
+  const { data: subscription, refresh: refreshSubscription } = useMySubscription();
+
+  const isPlus = isEntitlementActive(entitlements, 'plus');
+  const renewalLabel = useMemo(() => {
+    if (!subscription) return null;
+    if (subscription.status !== 'active') return null;
+    const ts = new Date(subscription.current_period_end).getTime();
+    if (!Number.isFinite(ts)) return null;
+    const dateLabel = new Date(ts).toLocaleDateString();
+    if (subscription.cancel_at_period_end || !subscription.auto_renews) return `Ends ${dateLabel}`;
+    return `Renews ${dateLabel}`;
+  }, [subscription]);
+
+  // Fix: When returning from the Plus purchase flow, this tab stays mounted.
+  // Refresh server-state on focus so the UI reflects the upgrade immediately.
+  useFocusEffect(
+    useCallback(() => {
+      Promise.allSettled([refreshEntitlements(), refreshSubscription(), refreshConsumables()]).catch(() => {});
+    }, [refreshConsumables, refreshEntitlements, refreshSubscription])
+  );
 
   const consumables = [
     {
@@ -131,6 +155,7 @@ function UpgradesTab() {
       title: 'Boost',
       subtitle: `Get more profile views.`,
       renewText: (() => {
+        if (!isPlus) return '';
         const row = byType('boost');
         const d = daysUntil(row?.renews_at ?? null);
         return d !== null ? formatDaysUntilRenewal(d) : '';
@@ -143,6 +168,7 @@ function UpgradesTab() {
       title: 'Rewind',
       subtitle: `Undo your last pass.`,
       renewText: (() => {
+        if (!isPlus) return '';
         const row = byType('rewind');
         const d = daysUntil(row?.renews_at ?? null);
         return d !== null ? formatDaysUntilRenewal(d) : '';
@@ -155,6 +181,7 @@ function UpgradesTab() {
       title: 'Compliment',
       subtitle: `Send a message with your like.`,
       renewText: (() => {
+        if (!isPlus) return '';
         const row = byType('compliment');
         const d = daysUntil(row?.renews_at ?? null);
         return d !== null ? formatDaysUntilRenewal(d) : '';
@@ -164,9 +191,15 @@ function UpgradesTab() {
     },
     {
       key: 'reset-dislikes',
-      title: 'Reset dislikes',
-      subtitle: `See profiles you passed again.`,
-      renewText: 'Pay per use',
+      title: 'Reset passes/skips',
+      subtitle: `See profiles you passed or skipped again.`,
+      renewText: (() => {
+        if (!isPlus) return 'Pay per use';
+        const row = byType('reset_dislikes');
+        const d = daysUntil(row?.renews_at ?? null);
+        if (d !== null) return formatDaysUntilRenewal(d);
+        return 'Pay per use';
+      })(),
       count: byType('reset_dislikes')?.balance ?? 0,
       icon: <IconSymbol name="arrow.counterclockwise" size={18} color={Colors.primary} />,
     },
@@ -178,37 +211,66 @@ function UpgradesTab() {
       contentContainerStyle={styles.tabScrollContent}
       showsVerticalScrollIndicator={false}
     >
-      <Card style={styles.plusCard}>
-        <View style={styles.plusCardHeader}>
-          <AppText variant="heading" style={styles.plusTitle}>
-            Get more with Pawfectly +
-          </AppText>
-          <AppText variant="body" style={styles.plusSubtitle}>
-            Unlock premium features and get more quality matches.
-          </AppText>
-        </View>
-        <AppButton variant="primary" onPress={() => router.push('/(tabs)/account/plus')}>
-          Upgrade
-        </AppButton>
-      </Card>
+      {isPlus ? (
+        <Card style={styles.plusCard}>
+          <View style={styles.plusCardHeader}>
+            <AppText variant="heading" style={styles.plusTitle}>
+              Manage subscription
+            </AppText>
+            <AppText variant="body" style={styles.plusSubtitle}>
+              {renewalLabel ? `${renewalLabel}.` : 'Pawfectly+ is active.'} Renews automatically. Cancel anytime in
+              Settings.
+            </AppText>
+          </View>
+          <AppButton variant="primary" onPress={() => router.push('/(tabs)/account/settings/subscription')}>
+            Manage
+          </AppButton>
+        </Card>
+      ) : (
+        <Card style={styles.plusCard}>
+          <View style={styles.plusCardHeader}>
+            <AppText variant="heading" style={styles.plusTitle}>
+              Get more with Pawfectly +
+            </AppText>
+            <AppText variant="body" style={styles.plusSubtitle}>
+              Unlock premium features and get more quality matches.
+            </AppText>
+          </View>
+          <AppButton variant="primary" onPress={() => router.push('/(tabs)/account/plus')}>
+            Upgrade
+          </AppButton>
+        </Card>
+      )}
 
       <View style={styles.sectionGroup}>
-        {consumables.map((c) => (
-          <Row
-            key={c.key}
-            title={c.title}
-            subtitle={`${c.subtitle} ${c.renewText ? `• ${c.renewText}` : ''}`}
-            left={
-              <View style={styles.rowIconWrap}>
-                {c.icon}
-                <View style={styles.rowIconBadge}>
-                  <ConsumableBadge count={c.count} />
+        {consumables
+          .filter((c) => (isPlus ? c.key !== 'rewind' : true))
+          .map((c) => (
+            <Row
+              key={c.key}
+              title={c.title}
+              subtitle={`${c.subtitle} ${c.renewText ? `• ${c.renewText}` : ''}`}
+              left={
+                <View style={styles.rowIconWrap}>
+                  {c.icon}
+                  <View style={styles.rowIconBadge}>
+                    <ConsumableBadge count={c.count} />
+                  </View>
                 </View>
-              </View>
-            }
-            onPress={() => router.push(`/(tabs)/account/consumables/${c.key}`)}
-          />
-        ))}
+              }
+              onPress={() => {
+                // Keep rows enabled. If you still have uses left, nudge instead of selling more.
+                if (c.key !== 'reset-dislikes' && c.count > 0) {
+                  Alert.alert(
+                    'You’re not out yet',
+                    `You have ${c.count} left. You can purchase more once you’re out.`
+                  );
+                  return;
+                }
+                router.push(`/(tabs)/account/consumables/${c.key}`);
+              }}
+            />
+          ))}
       </View>
     </ScrollView>
   );

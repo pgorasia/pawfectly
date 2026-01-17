@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ScreenContainer } from '@/components/common/ScreenContainer';
@@ -11,12 +11,15 @@ import { Colors } from '@/constants/colors';
 import { getLikedYouPage, type LikedYouCard, type LikedYouCursor } from '@/services/feed/likedYouService';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicPhotoUrl } from '@/utils/photoUrls';
+import { useMyEntitlements } from '@/hooks/useMyEntitlements';
+import { isEntitlementActive } from '@/services/entitlements/entitlementsService';
 
 type LaneFilter = 'all' | 'pals' | 'match';
 
 export default function LikedYouScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { data: entitlements, refresh: refreshEntitlements } = useMyEntitlements();
 
   const [cards, setCards] = useState<LikedYouCard[]>([]);
 
@@ -24,8 +27,8 @@ export default function LikedYouScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [isPremium, setIsPremium] = useState(false); // TODO: Get from user subscription status
   const [laneFilter, setLaneFilter] = useState<LaneFilter>('all');
+  const isPremium = isEntitlementActive(entitlements, 'plus');
 
   // Load initial page
   useEffect(() => {
@@ -55,6 +58,7 @@ export default function LikedYouScreen() {
 
       const refreshOnFocus = async () => {
         try {
+          await refreshEntitlements();
           const likedRes = await getLikedYouPage(20);
           setCards(likedRes.rows);
           setNextCursor(likedRes.nextCursor);
@@ -64,7 +68,7 @@ export default function LikedYouScreen() {
       };
 
       refreshOnFocus();
-    }, [user?.id, loading])
+    }, [user?.id, loading, refreshEntitlements])
   );
 
   // Refresh handler
@@ -109,8 +113,14 @@ export default function LikedYouScreen() {
   // Handle card press
   const handleCardPress = useCallback((card: LikedYouCard) => {
     if (!isPremium) {
-      // TODO: Show premium upgrade modal
-      console.log('Premium required to view profile');
+      Alert.alert(
+        'Upgrade to Pawfectly+',
+        'Unlock Who Liked You to view profiles.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Upgrade', onPress: () => router.push('/(tabs)/account/plus') },
+        ]
+      );
       return;
     }
 
@@ -218,23 +228,23 @@ export default function LikedYouScreen() {
         {showPremiumBanner ? (
           <View style={styles.premiumBanner}>
             <AppText variant="heading" style={styles.premiumTitle}>
-              Unlock Who Liked You
+              {normalCards.length} {normalCards.length === 1 ? 'person wants' : 'people want'} to connect with you
             </AppText>
             <AppText variant="body" style={styles.premiumSubtitle}>
-              {normalCards.length} {normalCards.length === 1 ? 'person has' : 'people have'} liked you
+              Upgrade to Pawfectly+ to unlock.
             </AppText>
             <AppButton
               variant="primary"
-              onPress={() => setIsPremium(true)} // TODO: Navigate to subscription screen
+              onPress={() => router.push('/(tabs)/account/plus')}
               style={styles.premiumButton}
             >
-              Upgrade to Premium
+              Upgrade to Pawfectly+
             </AppButton>
           </View>
         ) : null}
       </View>
     );
-  }, [isPremium, normalCards.length]);
+  }, [isPremium, normalCards.length, router]);
 
   // Render footer (loading more indicator)
   const renderFooter = useCallback(() => {

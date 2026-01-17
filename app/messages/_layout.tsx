@@ -1,11 +1,13 @@
 import { Stack } from 'expo-router';
 import { Platform } from 'react-native';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 
 export default function MessagesLayout() {
   return (
     <Stack
       screenOptions={{
         headerShown: false,
+        ...DEFAULT_HEADER_OPTIONS,
         // Prevent screen from unmounting when keyboard opens/closes
         animation: 'none', // Disable animations that can trigger remounts
         presentation: 'card', // Use card presentation mode

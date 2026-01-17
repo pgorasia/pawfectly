@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { AppText } from '@/components/ui/AppText';
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 
 interface Request {
   id: string;
@@ -60,6 +61,7 @@ export default function RequestDetailScreen() {
       <>
         <Stack.Screen 
           options={{ 
+            ...DEFAULT_HEADER_OPTIONS,
             title: 'Request',
             headerShown: true,
             headerBackTitle: 'Back',
@@ -134,6 +136,7 @@ export default function RequestDetailScreen() {
     <>
       <Stack.Screen 
         options={{ 
+          ...DEFAULT_HEADER_OPTIONS,
           title: 'Connection Request',
           headerShown: true,
           headerBackTitle: 'Back',

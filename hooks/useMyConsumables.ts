@@ -9,6 +9,10 @@ const consumablesCache = new Map<
   { data: MyConsumable[]; updatedAt: number }
 >();
 
+export function invalidateMyConsumablesCache(userId: string) {
+  consumablesCache.delete(userId);
+}
+
 export function useMyConsumables() {
   const { user } = useAuth();
   const [data, setData] = useState<MyConsumable[] | null>(null);

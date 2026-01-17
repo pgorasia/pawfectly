@@ -1,9 +1,15 @@
 import { Stack } from 'expo-router';
 import { BackTo } from '@/components/navigation/BackTo';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 
 export default function AccountLayout() {
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        ...DEFAULT_HEADER_OPTIONS,
+      }}
+    >
       <Stack.Screen name="index" />
       <Stack.Screen name="settings" />
       <Stack.Screen name="edit-pack" />
@@ -11,7 +17,7 @@ export default function AccountLayout() {
         name="plus"
         options={{
           headerShown: true,
-          title: 'Pawfectly +',
+          title: 'Upgrade to Plus',
           headerLeft: () => <BackTo href="/(tabs)/account" />,
         }}
       />

@@ -14,6 +14,7 @@ import { DraftBootstrapper } from "@/components/common/DraftBootstrapper";
 import { AuthSessionSync } from "@/components/common/AuthSessionSync";
 import { setupNotificationHandler } from "@/services/notifications/photoNotifications";
 import * as Notifications from "expo-notifications";
+import { DEFAULT_HEADER_OPTIONS } from "@/constants/navigation";
 
 function NotificationHandler() {
   const router = useRouter();
@@ -65,7 +66,12 @@ export default function RootLayout() {
                 <MeBootstrapper />
                 <DraftBootstrapper />
                 <NotificationHandler />
-                <Stack screenOptions={{ headerShown: false }} />
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    ...DEFAULT_HEADER_OPTIONS,
+                  }}
+                />
               </ProfileDraftProvider>
             </MeProvider>
           </AuthProvider>

@@ -1,9 +1,15 @@
 import { Stack } from 'expo-router';
 import { BackTo } from '@/components/navigation/BackTo';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 
 export default function SettingsLayout() {
   return (
-    <Stack screenOptions={{ headerShown: true }}>
+    <Stack
+      screenOptions={{
+        headerShown: true,
+        ...DEFAULT_HEADER_OPTIONS,
+      }}
+    >
       <Stack.Screen
         name="index"
         options={{

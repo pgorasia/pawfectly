@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
-import { Stack } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
 import { ScreenContainer } from '@/components/common/ScreenContainer';
 import { AppButton } from '@/components/ui/AppButton';
@@ -9,6 +10,10 @@ import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
+import { purchasePlusSubscription } from '@/services/billing/subscriptionService';
+import { useMyConsumables } from '@/hooks/useMyConsumables';
+import { useMyEntitlements } from '@/hooks/useMyEntitlements';
+import { useMySubscription } from '@/hooks/useMySubscription';
 
 type PlanKey = 'm1' | 'm3' | 'm6';
 
@@ -92,8 +97,14 @@ function FaqItem({
 }
 
 export default function PlusScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [selected, setSelected] = useState<PlanKey>('m6');
   const [showComparison, setShowComparison] = useState(false);
+  const [purchasing, setPurchasing] = useState(false);
+  const { refresh: refreshConsumables } = useMyConsumables();
+  const { refresh: refreshEntitlements } = useMyEntitlements();
+  const { refresh: refreshSubscription } = useMySubscription();
 
   const selectedPlan = useMemo(() => PLANS.find((p) => p.key === selected)!, [selected]);
   const selectedTotal = useMemo(
@@ -101,21 +112,46 @@ export default function PlusScreen() {
     [selectedPlan.months, selectedPlan.pricePerMonth]
   );
 
-  const handleUpgrade = () => {
-    Alert.alert(
-      'Coming soon',
-      'Subscriptions are not enabled yet. This screen is ready to be wired into RevenueCat (or equivalent) once billing is implemented.'
-    );
+  const handleUpgrade = async () => {
+    if (purchasing) return;
+    setPurchasing(true);
+    try {
+      const months = selectedPlan.months;
+      const res = await purchasePlusSubscription(months);
+      if (!res?.ok) {
+        Alert.alert('Purchase failed', res?.error || 'Please try again.');
+        return;
+      }
+
+      await Promise.allSettled([refreshEntitlements(), refreshSubscription(), refreshConsumables()]);
+
+      Alert.alert('You’re on Plus', 'Upgrade successful.', [
+        {
+          text: 'OK',
+          onPress: () => {
+            if (router.canGoBack()) router.back();
+            else router.replace('/(tabs)/account');
+          },
+        },
+      ]);
+    } catch (e: any) {
+      console.error('[PlusScreen] purchase failed:', e);
+      Alert.alert('Purchase failed', e?.message || 'Please try again.');
+    } finally {
+      setPurchasing(false);
+    }
   };
 
   return (
-    <ScreenContainer>
-      <Stack.Screen options={{ title: 'Upgrade to Plus' }} />
-
+    <ScreenContainer edges={[]}>
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: Math.max(0, insets.bottom) + Spacing.lg },
+        ]}
         showsVerticalScrollIndicator={false}
+        scrollIndicatorInsets={{ bottom: Math.max(0, insets.bottom) }}
       >
         <View style={styles.header}>
           <AppText variant="body" style={styles.subtitle}>
@@ -264,9 +300,12 @@ export default function PlusScreen() {
         </View>
 
         <View style={styles.cta}>
-          <AppButton variant="primary" onPress={handleUpgrade} style={styles.ctaButton}>
+          <AppButton variant="primary" onPress={handleUpgrade} style={styles.ctaButton} disabled={purchasing}>
             Get {selectedPlan.months} month{selectedPlan.months === 1 ? '' : 's'} for ${selectedTotal}
           </AppButton>
+          <AppText variant="caption" style={styles.renewalCopy}>
+            Renews automatically. Cancel anytime in Settings.
+          </AppText>
         </View>
 
         <View style={styles.faqSection}>
@@ -297,7 +336,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: Spacing.xxl,
+    paddingBottom: 0,
   },
   header: {
     paddingTop: Spacing.lg,
@@ -443,7 +482,7 @@ const styles = StyleSheet.create({
   },
   faqSection: {
     gap: Spacing.sm,
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
   },
   faqTitle: {
     marginBottom: Spacing.xs,
@@ -476,9 +515,15 @@ const styles = StyleSheet.create({
   cta: {
     paddingTop: Spacing.sm,
     marginBottom: Spacing.xl,
+    alignItems: 'center',
   },
   ctaButton: {
     width: '100%',
+  },
+  renewalCopy: {
+    marginTop: Spacing.sm,
+    opacity: 0.65,
+    textAlign: 'center',
   },
 });
 

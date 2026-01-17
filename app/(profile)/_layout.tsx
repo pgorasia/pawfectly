@@ -9,6 +9,7 @@ import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
 import { BackTo } from '@/components/navigation/BackTo';
 import { useLocalSearchParams } from 'expo-router';
+import { DEFAULT_HEADER_OPTIONS } from '@/constants/navigation';
 
 function ProfileDataGate({ children }: { children: React.ReactNode }) {
   const { meLoaded } = useMe();
@@ -49,7 +50,12 @@ export default function ProfileLayout() {
   return (
     <ProtectedRoute>
       <ProfileDataGate>
-        <Stack screenOptions={{ headerShown: false }}>
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            ...DEFAULT_HEADER_OPTIONS,
+          }}
+        >
           <Stack.Screen
             name="preferences"
             options={{
