@@ -26,6 +26,11 @@ import { supabase } from '@/services/supabase/supabaseClient';
 import { FullProfileView } from '@/components/profile/FullProfileView';
 import { LikeComposerModal } from '@/components/profile/LikeComposerModal';
 import type { ProfileViewPayload } from '@/types/feed';
+import { useMyConsumables } from '@/hooks/useMyConsumables';
+import { purchaseConsumable, consumeMyConsumable } from '@/services/consumables/consumablesService';
+import { ConsumableUpsellModal } from '@/components/account/ConsumableUpsellModal';
+import { useMyEntitlements } from '@/hooks/useMyEntitlements';
+import { isEntitlementActive } from '@/services/entitlements/entitlementsService';
 
 // Storage for persistence (AsyncStorage in Expo Go, MMKV in production)
 const DISLIKE_OUTBOX_KEY = 'dislike_outbox_v1';
@@ -53,6 +58,9 @@ export default function FeedScreen() {
   const { user } = useAuth();
   const { me } = useMe();
   const scrollViewRef = useRef<ScrollView>(null);
+  const { byType: consumableByType, refresh: refreshConsumables } = useMyConsumables();
+  const { data: entitlements } = useMyEntitlements();
+  const isPlus = isEntitlementActive(entitlements, 'plus');
   
   console.log('[FeedScreen] 🔄 Component render (Feed screen mounted)');
   
@@ -113,6 +121,13 @@ export default function FeedScreen() {
     const index = indexByLane[lane];
     return queue[index] || null;
   }, [queueByLane, indexByLane, lane]);
+
+  // Remaining cards for active lane (index-based queue does NOT shrink)
+  const remainingInLane = useMemo(() => {
+    const queueLen = queueByLane[lane].length;
+    const idx = indexByLane[lane];
+    return Math.max(0, queueLen - idx);
+  }, [queueByLane, indexByLane, lane]);
   
   // UI state
   const [loading, setLoading] = useState(true);
@@ -120,6 +135,9 @@ export default function FeedScreen() {
   const [swiping, setSwiping] = useState(false);
   const [remainingAccepts, setRemainingAccepts] = useState<number | null>(null);
   const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const [showRewindUpsell, setShowRewindUpsell] = useState(false);
+  const [showComplimentUpsell, setShowComplimentUpsell] = useState(false);
+  const [purchasingPack, setPurchasingPack] = useState(false);
   const [isProfileHidden, setIsProfileHidden] = useState<boolean | null>(null);
   const [showBlockMenu, setShowBlockMenu] = useState(false);
   const [refilling, setRefilling] = useState(false);
@@ -795,6 +813,9 @@ export default function FeedScreen() {
           setRemainingAccepts(result.remaining_accepts);
         }
 
+        // Compliment is consumed server-side (idempotent). Refresh badges.
+        refreshConsumables().catch(() => {});
+
         advanceToNext();
         Alert.alert(
           'Pending connection',
@@ -809,6 +830,11 @@ export default function FeedScreen() {
           setSwiping(false);
           return;
         }
+        if (result.error === 'insufficient_compliments') {
+          setSwiping(false);
+          setShowComplimentUpsell(true);
+          return;
+        }
         throw new Error('Failed to send chat request');
       }
 
@@ -816,6 +842,9 @@ export default function FeedScreen() {
       if (result.remaining_accepts !== undefined) {
         setRemainingAccepts(result.remaining_accepts);
       }
+
+      // Compliment is consumed server-side (idempotent). Refresh badges.
+      refreshConsumables().catch(() => {});
 
       // Advance to next profile
       advanceToNext();
@@ -826,7 +855,7 @@ export default function FeedScreen() {
       setSwiping(false);
       setLikeSource(null);
     }
-  }, [user?.id, currentProfile, likeSource, advanceToNext, lane]);
+  }, [user?.id, currentProfile, likeSource, advanceToNext, lane, refreshConsumables]);
 
   // Handle like button (directly submits like without modal)
   const handleLikeButton = useCallback(async () => {
@@ -899,22 +928,63 @@ export default function FeedScreen() {
     console.log('[FeedScreen] Premium upgrade clicked');
   };
 
+  const rewindRenewsAt = consumableByType('rewind')?.renews_at ?? null;
+  const complimentRenewsAt = consumableByType('compliment')?.renews_at ?? null;
+
+  const formatRenewsOn = (iso: string | null) => {
+    if (!iso) return null;
+    const ts = new Date(iso).getTime();
+    if (!Number.isFinite(ts)) return null;
+    return new Date(ts).toLocaleDateString();
+  };
+
   // Maintain buffer of at least 10 profiles in the queue for current lane
   useEffect(() => {
     if (!user?.id) return;
 
     const currentQueue = queueByLane[lane];
     const currentCursor = cursorByLane[lane];
+    const currentIndex = indexByLane[lane];
+    const remaining = Math.max(0, currentQueue.length - currentIndex);
 
-    if (currentQueue.length < 10 && currentCursor && !refilling) {
+    // Prefetch based on REMAINING cards, not total queue length
+    if (remaining < 10 && currentCursor && !refilling) {
       setRefilling(true);
       loadFeedPage(lane, currentCursor, true).finally(() => setRefilling(false));
     }
-  }, [user?.id, queueByLane, lane, cursorByLane, refilling, loadFeedPage]);
+  }, [user?.id, queueByLane, lane, cursorByLane, indexByLane, refilling, loadFeedPage]);
+
+  // If we run out of local cards but the server cursor exists, fetch the next page.
+  // This prevents getting stuck on the "Loading..." placeholder when index passes queue length.
+  useEffect(() => {
+    if (!user?.id) return;
+    if (remainingInLane > 0) return;
+    if (exhaustedByLane[lane]) return;
+
+    const cursor = cursorByLane[lane];
+    if (!cursor || refilling) return;
+
+    setRefilling(true);
+    loadFeedPage(lane, cursor, true).finally(() => setRefilling(false));
+  }, [user?.id, remainingInLane, exhaustedByLane, lane, cursorByLane, refilling, loadFeedPage]);
 
   // Handle undo action (local only, within 10s grace period)
-  const handleUndo = useCallback(() => {
+  const handleUndo = useCallback(async () => {
     if (!pendingUndoNew) return;
+
+    // Rewind consumption (included-first, then purchased). If out, prompt to buy more.
+    try {
+      const res = await consumeMyConsumable('rewind', 1);
+      if (!res.ok) {
+        setShowRewindUpsell(true);
+        return;
+      }
+      refreshConsumables().catch(() => {});
+    } catch (e) {
+      console.error('[FeedScreen] Failed to consume rewind:', e);
+      setShowRewindUpsell(true);
+      return;
+    }
 
     // Clear empty state timeout to prevent placeholder flash
     if (emptyTimeoutRef.current) {
@@ -968,7 +1038,7 @@ export default function FeedScreen() {
     // Reset scroll state
     setHasScrolledPastHero(false);
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-  }, [pendingUndoNew, queueByLane, indexByLane]);
+  }, [pendingUndoNew, queueByLane, indexByLane, refreshConsumables]);
 
   if (loading) {
     return (
@@ -984,6 +1054,10 @@ export default function FeedScreen() {
   }
 
   const hasProfile = currentProfile !== null;
+  const isOutOfCards =
+    !hasProfile &&
+    remainingInLane === 0 &&
+    (exhaustedByLane[lane] || cursorByLane[lane] === null);
 
   return (
     <ScreenContainer>
@@ -992,7 +1066,7 @@ export default function FeedScreen() {
           Pawfectly
         </AppText>
         <View style={styles.headerRight}>
-          {hasProfile && pendingUndoNew && (
+          {!!pendingUndoNew && (
             <TouchableOpacity
               style={styles.headerButton}
               onPress={handleUndo}
@@ -1094,8 +1168,8 @@ export default function FeedScreen() {
               />
             </ScrollView>
           </View>
-        ) : exhaustedByLane[lane] && queueByLane[lane].length === 0 ? (
-          // Empty state for both lanes
+        ) : isOutOfCards ? (
+          // Empty state (lane exhausted and no remaining cards)
           <View style={styles.emptyContainer}>
             <AppText variant="heading" style={styles.emptyTitle}>
               {lane === 'pals' 
@@ -1256,6 +1330,76 @@ export default function FeedScreen() {
         }}
         onSubmit={handleLikeSubmit}
         sourceType={likeSource?.type}
+      />
+
+      {/* Rewind upsell (when out) */}
+      <ConsumableUpsellModal
+        visible={showRewindUpsell}
+        title="Get more rewinds"
+        message={
+          isPlus && rewindRenewsAt
+            ? `You’re out of weekly rewinds. Refreshes on ${formatRenewsOn(rewindRenewsAt)}. Want one now? Grab a pack.`
+            : 'You’re out of rewinds. Get more anytime.'
+        }
+        options={[
+          { quantity: 3, totalPriceLabel: '$1.99' },
+          { quantity: 7, totalPriceLabel: '$3.99', popular: true },
+          { quantity: 10, totalPriceLabel: '$4.99' },
+        ]}
+        confirmVerb="Get"
+        unitLabel="rewinds"
+        onClose={() => setShowRewindUpsell(false)}
+        onPurchase={async (qty) => {
+          if (purchasingPack) return;
+          setPurchasingPack(true);
+          try {
+            await purchaseConsumable('rewind', qty);
+            await refreshConsumables();
+            setShowRewindUpsell(false);
+            Alert.alert('Purchased', `Added ${qty} rewinds.`);
+          } finally {
+            setPurchasingPack(false);
+          }
+        }}
+        secondaryCta={
+          isPlus
+            ? null
+            : { label: 'Get unlimited rewinds with Pawfectly+', onPress: () => router.push('/(tabs)/account/plus') }
+        }
+      />
+
+      {/* Compliment upsell (when out) */}
+      <ConsumableUpsellModal
+        visible={showComplimentUpsell}
+        title="Get more compliments"
+        message={
+          isPlus && complimentRenewsAt
+            ? `You’re out of weekly compliments. Refreshes on ${formatRenewsOn(complimentRenewsAt)}. Want to keep going? Grab more.`
+            : 'You’re out of compliments. Get more anytime.'
+        }
+        options={[
+          { quantity: 1, totalPriceLabel: '$2.99' },
+          { quantity: 5, totalPriceLabel: '$9.99', popular: true },
+          { quantity: 10, totalPriceLabel: '$14.99' },
+        ]}
+        confirmVerb="Get"
+        unitLabel="compliments"
+        onClose={() => setShowComplimentUpsell(false)}
+        onPurchase={async (qty) => {
+          if (purchasingPack) return;
+          setPurchasingPack(true);
+          try {
+            await purchaseConsumable('compliment', qty);
+            await refreshConsumables();
+            setShowComplimentUpsell(false);
+            Alert.alert('Purchased', `Added ${qty} compliments.`);
+          } finally {
+            setPurchasingPack(false);
+          }
+        }}
+        secondaryCta={
+          isPlus ? null : { label: 'Get weekly compliments with Pawfectly+', onPress: () => router.push('/(tabs)/account/plus') }
+        }
       />
     </ScreenContainer>
   );

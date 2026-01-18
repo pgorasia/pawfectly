@@ -12,7 +12,17 @@ export function BackTo({ href }: BackToProps) {
   const router = useRouter();
   
   return (
-    <Pressable onPress={() => router.replace(href)} hitSlop={10} style={styles.container}>
+    <Pressable
+      onPress={() => {
+        if (router.canGoBack()) {
+          router.back();
+          return;
+        }
+        router.replace(href);
+      }}
+      hitSlop={10}
+      style={styles.container}
+    >
       <MaterialIcons name="chevron-left" size={28} color={Colors.text} />
     </Pressable>
   );

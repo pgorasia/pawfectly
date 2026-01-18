@@ -258,17 +258,7 @@ function UpgradesTab() {
                   </View>
                 </View>
               }
-              onPress={() => {
-                // Keep rows enabled. If you still have uses left, nudge instead of selling more.
-                if (c.key !== 'reset-dislikes' && c.count > 0) {
-                  Alert.alert(
-                    'You’re not out yet',
-                    `You have ${c.count} left. You can purchase more once you’re out.`
-                  );
-                  return;
-                }
-                router.push(`/(tabs)/account/consumables/${c.key}`);
-              }}
+              onPress={() => router.push(`/(tabs)/account/consumables/${c.key}`)}
             />
           ))}
       </View>
