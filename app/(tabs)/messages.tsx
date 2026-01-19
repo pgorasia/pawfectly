@@ -161,6 +161,7 @@ export default function MessagesScreen() {
               display_name: thread.display_name,
               dog_name: thread.dog_name,
               hero_storage_path: thread.hero_storage_path,
+              thumb_storage_path: (thread as any).thumb_storage_path ?? null,
             });
           }
         });
@@ -339,6 +340,7 @@ export default function MessagesScreen() {
           display_name: match.display_name,
           dog_name: match.dog_name,
           hero_storage_path: match.hero_storage_path,
+          thumb_storage_path: (match as any).thumb_storage_path ?? null,
         };
 
         // Remove from matches, add to threads
@@ -504,7 +506,7 @@ export default function MessagesScreen() {
           params: {
             otherUserId: match.user_id,
             peerName: match.display_name,
-            peerPhotoPath: match.hero_storage_path || '',
+            peerPhotoPath: match.thumb_storage_path || match.hero_storage_path || '',
             peerUserId: match.user_id,
           },
         });
@@ -543,7 +545,7 @@ export default function MessagesScreen() {
         params: {
           conversationId, // Always a real UUID
           peerName: match.display_name,
-          peerPhotoPath: match.hero_storage_path || '',
+          peerPhotoPath: match.thumb_storage_path || match.hero_storage_path || '',
           peerUserId: match.user_id, // For profile view
         },
       });
@@ -566,7 +568,7 @@ export default function MessagesScreen() {
         params: {
           otherUserId: item.user_id,
           peerName: item.display_name,
-          peerPhotoPath: item.hero_storage_path || '',
+          peerPhotoPath: (item as any).thumb_storage_path || item.hero_storage_path || '',
           peerUserId: item.user_id,
         },
       });
@@ -600,7 +602,7 @@ export default function MessagesScreen() {
       params: {
         conversationId: item.conversation_id,
         peerName: item.display_name,
-        peerPhotoPath: item.hero_storage_path || '',
+        peerPhotoPath: (item as any).thumb_storage_path || item.hero_storage_path || '',
         peerUserId: item.user_id,
         isSentRequest: isSentRequest ? 'true' : undefined, // Flag for sent requests (pending acceptance)
       },
@@ -613,7 +615,7 @@ export default function MessagesScreen() {
       params: {
         conversationId: request.conversation_id,
         peerName: request.display_name,
-        peerPhotoPath: request.hero_storage_path || '',
+        peerPhotoPath: request.thumb_storage_path || request.hero_storage_path || '',
         peerUserId: request.user_id,
         isRequest: 'true', // Flag to indicate this is a request
         requestLane: request.lane, // Lane to register like for

@@ -43,7 +43,7 @@ export function derivePeerFromMatch(match: Match, currentUserId: string): {
   return {
     peerId: match.user_id,
     peerName: match.display_name,
-    peerPhotoUrl: match.hero_storage_path,
+    peerPhotoUrl: match.thumb_storage_path ?? match.hero_storage_path,
   };
 }
 

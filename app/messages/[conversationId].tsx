@@ -24,9 +24,8 @@ import {
   ScrollView,
   Image,
   Keyboard,
-  InteractionManager,
 } from 'react-native';
-import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
+import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { publicPhotoUrl } from '@/utils/photoUrls';
@@ -41,6 +40,7 @@ import { supabase } from '@/services/supabase/supabaseClient';
 import {
   getConversationMessages,
   sendMessage,
+  getOrCreateConversation,
   markConversationRead,
   closeConversation,
   unmatchUser,
@@ -203,6 +203,8 @@ export default function ChatThreadScreen() {
     isRequest,
     requestLane,
     isSentRequest,
+    isDraft,
+    draftLane,
   } = useLocalSearchParams<{
     conversationId: string;
     peerUserId?: string;
@@ -211,7 +213,15 @@ export default function ChatThreadScreen() {
     isRequest?: string; // 'true' if this is an incoming request (user needs to Accept/Reject)
     requestLane?: string; // 'pals' | 'match' - lane to register like for
     isSentRequest?: string; // 'true' if this is a sent request (pending acceptance from other user)
+    isDraft?: string; // 'true' when opening from celebration without creating a conversation
+    draftLane?: string; // 'pals' | 'match' used when creating conversation on first send
   }>();
+
+  const isDraftMode = isDraft === 'true';
+  const isConversationIdUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    String(conversationId || '')
+  );
+  const effectiveConversationId = isDraftMode ? null : conversationId;
 
   // Request state
   const isIncomingRequest = isRequest === 'true'; // Incoming request - show Accept/Reject buttons
@@ -220,7 +230,8 @@ export default function ChatThreadScreen() {
   const [processingRequest, setProcessingRequest] = useState(false);
   
   // Input should be disabled if it's an incoming request (not accepted) OR a sent request (pending)
-  const isInputDisabled = (isIncomingRequest && !requestAccepted) || isPendingSentRequest;
+  const isInputDisabled =
+    (isIncomingRequest && !requestAccepted) || isPendingSentRequest;
 
   // Tab state
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -245,17 +256,14 @@ export default function ChatThreadScreen() {
   const inputRef = useRef<TextInput>(null);
   const hasMarkedRead = useRef(false);
   const initialMessageCount = useRef<number>(0); // Track original message count before any sends
-  const hasAutoScrolledToBottom = useRef(false);
   const isAtBottomRef = useRef(true);
-  const pendingInitialBottomScrollRef = useRef(false);
-  const hasDoneInitialLayoutScrollRef = useRef(false);
   const lastRenderedMessageIdRef = useRef<string | null>(null);
+  const lastBottomInsetRef = useRef<number>(insets.bottom);
 
-  const scrollToBottom = useCallback((animated: boolean) => {
-    InteractionManager.runAfterInteractions(() => {
-      requestAnimationFrame(() => {
-        flatListRef.current?.scrollToEnd({ animated });
-      });
+  // In an inverted list, offset 0 corresponds to the "latest messages" position.
+  const scrollToLatest = useCallback((animated: boolean) => {
+    requestAnimationFrame(() => {
+      flatListRef.current?.scrollToOffset({ offset: 0, animated });
     });
   }, []);
 
@@ -265,21 +273,31 @@ export default function ChatThreadScreen() {
 
   // Validate conversationId early - must be a valid UUID
   useEffect(() => {
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    
+    if (isDraftMode) return;
+
     console.log('[ChatThread] conversationId from params:', conversationId);
-    
-    if (!conversationId || !uuidRegex.test(conversationId)) {
+
+    if (!conversationId || !isConversationIdUuid) {
       console.error('[ChatThread] Invalid conversationId:', conversationId);
       Alert.alert('Error', `Invalid conversation ID: ${conversationId}`);
       router.back();
     }
-  }, [conversationId, router]);
+  }, [conversationId, router, isDraftMode, isConversationIdUuid]);
 
   // Load messages on mount
   useEffect(() => {
+    // Draft: no server conversation yet (or we intentionally don't open it)
+    if (isDraftMode) {
+      setMessages([]);
+      setNextCursor(null);
+      setReadReceipt(null);
+      initialMessageCount.current = 0;
+      setLoading(false);
+      return;
+    }
+
     // conversationId is always a real UUID now
-    if (!conversationId) {
+    if (!effectiveConversationId || !isConversationIdUuid) {
       setMessages([]);
       setNextCursor(null);
       setLoading(false);
@@ -289,7 +307,7 @@ export default function ChatThreadScreen() {
     const loadInitialMessages = async () => {
       setLoading(true);
       try {
-        const result = await getConversationMessages(conversationId, 30, null);
+        const result = await getConversationMessages(effectiveConversationId, 30, null);
 
         const serverMessages = result.messages.map((msg) => convertToChatMessage(msg, user?.id || ''));
         
@@ -302,20 +320,13 @@ export default function ChatThreadScreen() {
         
         // Store initial message count - if 0, this is a new conversation without messages
         initialMessageCount.current = serverMessages.length;
-        
+
         // Merge with existing messages (dedupes by id, server wins)
         setMessages((prev) => mergeMessages(prev, serverMessages));
         setNextCursor(result.nextCursor);
         setReadReceipt(result.readReceipt ?? null);
 
         setLoading(false);
-
-        // Requirement: when chat loads, auto-scroll to bottom.
-        // Keyboard + layout timing can otherwise leave us slightly above bottom.
-        pendingInitialBottomScrollRef.current = true;
-        hasAutoScrolledToBottom.current = true;
-        scrollToBottom(false);
-        setTimeout(() => scrollToBottom(false), 150);
       } catch (error) {
         console.error('[ChatThread] Failed to load messages:', error);
         Alert.alert('Error', 'Failed to load messages. Please try again.');
@@ -324,11 +335,11 @@ export default function ChatThreadScreen() {
     };
 
     loadInitialMessages();
-  }, [conversationId, user?.id]);
+  }, [effectiveConversationId, user?.id, isDraftMode, isConversationIdUuid]);
 
   // Single, non-jittery scroll controller:
-  // - After initial layout: force bottom once.
-  // - After that: only auto-scroll when user is already at bottom and a new message arrives.
+  // - FlatList is inverted so the latest message is visible immediately (no initial snap).
+  // - After that: only auto-scroll when user is already at the latest position and a new message arrives.
   useEffect(() => {
     const last = messages.length ? messages[messages.length - 1] : null;
     const lastId = last ? String(last.id) : null;
@@ -337,25 +348,38 @@ export default function ChatThreadScreen() {
     if (lastId && lastRenderedMessageIdRef.current !== lastId) {
       lastRenderedMessageIdRef.current = lastId;
 
-      if (isAtBottomRef.current && !pendingInitialBottomScrollRef.current) {
-        scrollToBottom(true);
+      if (isAtBottomRef.current) {
+        scrollToLatest(false);
       }
     }
-  }, [messages, scrollToBottom]);
+  }, [messages, scrollToLatest]);
+
+  // If bottom safe-area inset changes right after mount (common on Android),
+  // the footer height changes and the "at bottom" position can shift slightly.
+  // When we are supposed to be pinned to the latest message, re-scroll once non-animated.
+  useEffect(() => {
+    const prev = lastBottomInsetRef.current;
+    if (prev !== insets.bottom) {
+      lastBottomInsetRef.current = insets.bottom;
+      if (isAtBottomRef.current) {
+        scrollToLatest(false);
+      }
+    }
+  }, [insets.bottom, scrollToLatest]);
 
   // Realtime: live new messages (no refresh needed)
   useEffect(() => {
-    if (!conversationId || !user?.id) return;
+    if (!effectiveConversationId || !user?.id) return;
 
     const channel = supabase
-      .channel(`conversation_messages:${conversationId}`)
+      .channel(`conversation_messages:${effectiveConversationId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'conversation_messages',
-          filter: `conversation_id=eq.${conversationId}`,
+          filter: `conversation_id=eq.${effectiveConversationId}`,
         },
         async (payload) => {
           if (__DEV__) {
@@ -383,12 +407,12 @@ export default function ChatThreadScreen() {
 
           // If I'm currently at the bottom and viewing the chat tab, mark read for incoming.
           if (row.sender_id !== user.id && activeTab === 'chat' && isAtBottomRef.current) {
-            await markConversationRead(conversationId);
+            await markConversationRead(effectiveConversationId);
           }
 
           // Auto-scroll only if user is already at bottom.
           if (isAtBottomRef.current) {
-            scrollToBottom(true);
+            scrollToLatest(false);
           }
         }
       )
@@ -401,23 +425,23 @@ export default function ChatThreadScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversationId, user?.id, activeTab, scrollToBottom]);
+  }, [effectiveConversationId, user?.id, activeTab, scrollToLatest]);
 
   // Realtime: live receipt updates (Plus only) without leaking to free users.
   // We infer "plus" by whether the server returned readReceipt != null.
   useEffect(() => {
-    if (!conversationId || !user?.id) return;
+    if (!effectiveConversationId || !user?.id) return;
     if (readReceipt == null) return;
 
     const channel = supabase
-      .channel(`conversation_read_receipts:${conversationId}`)
+      .channel(`conversation_read_receipts:${effectiveConversationId}`)
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'conversation_read_receipts',
-          filter: `conversation_id=eq.${conversationId}`,
+          filter: `conversation_id=eq.${effectiveConversationId}`,
         },
         (payload) => {
           if (__DEV__) {
@@ -436,7 +460,7 @@ export default function ChatThreadScreen() {
           );
 
           if (isAtBottomRef.current) {
-            scrollToBottom(false);
+            scrollToLatest(false);
           }
         }
       )
@@ -449,15 +473,15 @@ export default function ChatThreadScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [conversationId, user?.id, readReceipt, scrollToBottom]);
+  }, [effectiveConversationId, user?.id, readReceipt, scrollToLatest]);
 
   // B) Load older messages for pagination
   const loadOlderMessages = useCallback(async () => {
-    if (!conversationId || !nextCursor || loadingOlder) return;
+    if (!effectiveConversationId || !isConversationIdUuid || !nextCursor || loadingOlder) return;
 
     setLoadingOlder(true);
     try {
-      const result = await getConversationMessages(conversationId, 30, nextCursor);
+      const result = await getConversationMessages(effectiveConversationId, 30, nextCursor);
 
       const olderMessages = result.messages.map((msg) => convertToChatMessage(msg, user?.id || ''));
       
@@ -470,25 +494,10 @@ export default function ChatThreadScreen() {
       console.error('[ChatThread] Failed to load older messages:', error);
       setLoadingOlder(false);
     }
-  }, [conversationId, nextCursor, loadingOlder, user?.id]);
+  }, [effectiveConversationId, isConversationIdUuid, nextCursor, loadingOlder, user?.id]);
 
-  // Auto-focus input and open keyboard when Chat tab is active
-  useFocusEffect(
-    useCallback(() => {
-      if (activeTab === 'chat') {
-        // Small delay to ensure the input is mounted.
-        // Avoid dismissing the keyboard on Android; it can prevent the keyboard from
-        // re-opening reliably when combined with KeyboardAvoidingView.
-        const timer = setTimeout(() => {
-          inputRef.current?.focus();
-          if (Platform.OS === 'android') {
-            setTimeout(() => inputRef.current?.focus(), 75);
-          }
-        }, 250);
-        return () => clearTimeout(timer);
-      }
-    }, [activeTab])
-  );
+  // Intentionally do NOT auto-focus the input on open.
+  // This prevents the keyboard from popping up automatically when entering the chat screen.
 
   // Load profile data when Profile tab is opened
   useEffect(() => {
@@ -513,9 +522,9 @@ export default function ChatThreadScreen() {
   useEffect(() => {
     const showSubscription = Keyboard.addListener('keyboardDidShow', () => {
       setIsKeyboardVisible(true);
-      if (pendingInitialBottomScrollRef.current) {
-        pendingInitialBottomScrollRef.current = false;
-        scrollToBottom(false);
+      if (isAtBottomRef.current) {
+        // Keep the latest message fully visible if user is already at the end.
+        scrollToLatest(false);
       }
     });
     const hideSubscription = Keyboard.addListener('keyboardDidHide', () => {
@@ -530,10 +539,10 @@ export default function ChatThreadScreen() {
 
   // Mark conversation as read when screen becomes active
   useEffect(() => {
-    if (!conversationId || hasMarkedRead.current) return;
+    if (!effectiveConversationId || !isConversationIdUuid || hasMarkedRead.current) return;
 
     const markAsRead = async () => {
-      const { error } = await markConversationRead(conversationId);
+      const { error } = await markConversationRead(effectiveConversationId);
 
       if (error) {
         console.error('[ChatThread] Failed to mark as read:', error);
@@ -544,23 +553,37 @@ export default function ChatThreadScreen() {
     };
 
     markAsRead();
-  }, [conversationId]);
+  }, [effectiveConversationId, isConversationIdUuid]);
 
   // Optimistic send with first-message detection
   const handleSend = async () => {
-    if (inputText.trim().length === 0 || !conversationId) {
-      console.error('[ChatThread] handleSend: missing input or conversationId', {
-        hasInput: inputText.trim().length > 0,
-        conversationId,
-      });
-      return;
+    if (inputText.trim().length === 0) return;
+
+    // Draft mode: create/resolve the conversation ONLY when the user sends.
+    // This keeps the connection in the Matches row unless the user actually sends a message.
+    let sendConversationId = effectiveConversationId;
+    if (isDraftMode) {
+      if (!peerUserId) {
+        Alert.alert('Error', 'Missing recipient info.');
+        return;
+      }
+      const lane =
+        draftLane === 'pals' || draftLane === 'match'
+          ? (draftLane as 'pals' | 'match')
+          : 'match';
+      try {
+        const convo = await getOrCreateConversation(peerUserId, lane);
+        sendConversationId = convo.conversation_id;
+      } catch (e) {
+        console.error('[ChatThread][draft] ensure conversation failed:', e);
+        Alert.alert('Error', 'Failed to start chat. Please try again.');
+        return;
+      }
     }
 
-    // Validate conversationId is a valid UUID before sending
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(conversationId)) {
-      console.error('[ChatThread] handleSend: Invalid conversationId format:', conversationId);
-      Alert.alert('Error', `Invalid conversation ID: ${conversationId}`);
+    if (!sendConversationId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sendConversationId)) {
+      console.error('[ChatThread] handleSend: Invalid conversationId:', sendConversationId);
+      Alert.alert('Error', 'Invalid conversation.');
       return;
     }
 
@@ -568,7 +591,7 @@ export default function ChatThreadScreen() {
     const clientMessageId = generateClientMessageId(); // Generate UUID for client message ID
     
     console.log('[ChatThread] handleSend:', {
-      conversationId,
+      conversationId: sendConversationId,
       messageText: messageText.substring(0, 50),
       clientMessageId,
     });
@@ -595,12 +618,12 @@ export default function ChatThreadScreen() {
 
     // Scroll to bottom after sending
     setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
+      scrollToLatest(true);
     }, 100);
 
     // Send message with all 5 parameters
     const { data, error } = await sendMessage(
-      conversationId,
+      sendConversationId,
       messageText,
       'text',
       {},
@@ -637,7 +660,7 @@ export default function ChatThreadScreen() {
       if (isFirstMessage && peerUserId) {
         console.log('[ChatThread] First message sent successfully, emitting FIRST_MESSAGE_SENT event');
         chatEvents.emit(CHAT_EVENTS.FIRST_MESSAGE_SENT, {
-          conversationId: conversationId,
+          conversationId: sendConversationId,
           peerUserId: peerUserId,
           messageText,
           messageId: data.message_id,
@@ -645,6 +668,19 @@ export default function ChatThreadScreen() {
         });
         // Mark as no longer first message after successful send
         initialMessageCount.current = 1;
+      }
+
+      // If we were in draft mode, swap the route to the real conversation thread now.
+      if (isDraftMode) {
+        router.replace({
+          pathname: '/messages/[conversationId]',
+          params: {
+            conversationId: sendConversationId,
+            peerUserId,
+            peerName,
+            peerPhotoPath,
+          },
+        });
       }
     }
   };
@@ -971,6 +1007,8 @@ export default function ChatThreadScreen() {
   const systemBarSpacerHeight = Math.max(insets.bottom, 0);
   const systemBarSpacerColor = Platform.OS === 'android' ? '#000000' : Colors.background;
 
+  const displayMessages = React.useMemo(() => [...messages].reverse(), [messages]);
+
   const lastOutgoingMessage = React.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
@@ -1122,7 +1160,8 @@ export default function ChatThreadScreen() {
             ) : messages.length > 0 ? (
               <FlatList
                 ref={flatListRef}
-                data={messages}
+                inverted
+                data={displayMessages}
                 keyExtractor={(item) => String(item.id)}
                 renderItem={({ item }) => {
                   const isLastOutgoing = lastOutgoingMessage?.id === item.id;
@@ -1142,25 +1181,17 @@ export default function ChatThreadScreen() {
                   );
                 }}
                 contentContainerStyle={styles.messagesList}
-                onLayout={() => {
-                  // Do the "initial bottom" exactly once after first layout.
-                  if (!hasDoneInitialLayoutScrollRef.current) {
-                    hasDoneInitialLayoutScrollRef.current = true;
-                    pendingInitialBottomScrollRef.current = false;
-                    scrollToBottom(false);
-                    return;
-                  }
-                }}
                 onScroll={(e) => {
-                  const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-                  const paddingToBottom = 24;
-                  isAtBottomRef.current =
-                    layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+                  const { contentOffset } = e.nativeEvent;
+                  const paddingToLatest = 24;
+                  // In inverted lists, "latest" corresponds to offset ~0.
+                  // As the user scrolls to older messages, contentOffset.y grows.
+                  isAtBottomRef.current = contentOffset.y <= paddingToLatest;
                 }}
                 scrollEventThrottle={16}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="interactive"
-                ListHeaderComponent={
+                ListFooterComponent={
                   <>
                     {nextCursor && !loadingOlder ? (
                       <TouchableOpacity 
@@ -1242,10 +1273,8 @@ export default function ChatThreadScreen() {
                     blurOnSubmit={false}
                     editable={!isInputDisabled}
                     onFocus={() => {
-                      // Scroll to bottom when input is focused
-                      setTimeout(() => {
-                        flatListRef.current?.scrollToEnd({ animated: true });
-                      }, 100);
+                      // Scroll to latest message when input is focused
+                      setTimeout(() => scrollToLatest(true), 100);
                     }}
                   />
                   <TouchableOpacity

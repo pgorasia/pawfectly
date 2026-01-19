@@ -9,6 +9,7 @@ import { LaneBadge, type LaneBadgeValue } from '@/components/messages/LaneBadge'
 import { Spacing } from '@/constants/spacing';
 import { Colors } from '@/constants/colors';
 import { getLikedYouPage, type LikedYouCard, type LikedYouCursor } from '@/services/feed/likedYouService';
+import { mergeLikedYouIdsFromRows } from '@/services/feed/likedYouIdCache';
 import { useAuth } from '@/contexts/AuthContext';
 import { publicPhotoUrl } from '@/utils/photoUrls';
 import { useMyEntitlements } from '@/hooks/useMyEntitlements';
@@ -41,6 +42,9 @@ export default function LikedYouScreen() {
 
         setCards(likedRes.rows);
         setNextCursor(likedRes.nextCursor);
+        if (user?.id) {
+          mergeLikedYouIdsFromRows(user.id, likedRes.rows).catch(() => {});
+        }
       } catch (error) {
         console.error('[LikedYouScreen] Failed to load initial page:', error);
       } finally {
@@ -62,6 +66,9 @@ export default function LikedYouScreen() {
           const likedRes = await getLikedYouPage(20);
           setCards(likedRes.rows);
           setNextCursor(likedRes.nextCursor);
+          if (user?.id) {
+            mergeLikedYouIdsFromRows(user.id, likedRes.rows).catch(() => {});
+          }
         } catch (error) {
           console.error('[LikedYouScreen] Failed to refresh on focus:', error);
         }
@@ -78,6 +85,9 @@ export default function LikedYouScreen() {
       const likedRes = await getLikedYouPage(20);
       setCards(likedRes.rows);
       setNextCursor(likedRes.nextCursor);
+      if (user?.id) {
+        mergeLikedYouIdsFromRows(user.id, likedRes.rows).catch(() => {});
+      }
     } catch (error) {
       console.error('[LikedYouScreen] Failed to refresh:', error);
     } finally {
@@ -94,6 +104,9 @@ export default function LikedYouScreen() {
       const { rows, nextCursor: cursor } = await getLikedYouPage(20, nextCursor);
       setCards((prev) => [...prev, ...rows]);
       setNextCursor(cursor);
+      if (user?.id) {
+        mergeLikedYouIdsFromRows(user.id, rows).catch(() => {});
+      }
     } catch (error) {
       console.error('[LikedYouScreen] Failed to load more:', error);
     } finally {

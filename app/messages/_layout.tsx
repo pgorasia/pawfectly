@@ -37,6 +37,12 @@ export default function MessagesLayout() {
           gestureEnabled: true,
         }}
       />
+      <Stack.Screen
+        name="new/[otherUserId]"
+        options={{
+          gestureEnabled: true,
+        }}
+      />
     </Stack>
   );
 }

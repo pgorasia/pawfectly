@@ -4,18 +4,17 @@
  */
 
 import React, { useMemo, useState, useEffect } from 'react';
-import { View, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { Alert, View, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Image } from 'expo-image';
 import { AppText } from '@/components/ui/AppText';
 import { Card } from '@/components/ui/Card';
-import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/colors';
 import { Spacing } from '@/constants/spacing';
 import type { Photo } from '@/types/photo';
 import type { PhotoBucketState } from '@/hooks/usePhotoBuckets';
 import { supabase } from '@/services/supabase/supabaseClient';
-import { isPhotoVerified } from '@/services/badges/badgeService';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { MaterialIcons } from '@expo/vector-icons';
 
 interface HumanPhotoBucketProps {
   bucket: PhotoBucketState;
@@ -33,28 +32,42 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
   onReplace,
 }) => {
   const { photos, isUploading, uploadError } = bucket;
-  const [verifiedPhotoIds, setVerifiedPhotoIds] = useState<Set<string>>(new Set());
+  const [selfieVerifiedPhotoId, setSelfieVerifiedPhotoId] = useState<string | null>(null);
 
-  // Check which photos are verified
+  const MAX_HUMAN_PHOTOS = 3;
+  const PHOTO_WITH_DOG_BORDER = '#3B82F6';
+  const SELFIE_VERIFIED_BORDER = Colors.secondary; // teal (#14B8A6)
+
+  // Fetch selfie-verified photo id once (per session / when photos change).
   useEffect(() => {
-    const checkVerifiedPhotos = async () => {
-      const verified = new Set<string>();
-      for (const photo of photos) {
-        try {
-          const isVerified = await isPhotoVerified(photo.id);
-          if (isVerified) {
-            verified.add(photo.id);
-          }
-        } catch (error) {
-          console.error(`[HumanPhotoBucket] Failed to check verification for photo ${photo.id}:`, error);
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        if (!auth?.user?.id) return;
+
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('selfie_verified_photo_id')
+          .eq('user_id', auth.user.id)
+          .single();
+
+        if (cancelled) return;
+        if (error) {
+          setSelfieVerifiedPhotoId(null);
+          return;
         }
+        setSelfieVerifiedPhotoId(profile?.selfie_verified_photo_id ?? null);
+      } catch (e) {
+        if (!cancelled) setSelfieVerifiedPhotoId(null);
       }
-      setVerifiedPhotoIds(verified);
     };
 
-    if (photos.length > 0) {
-      checkVerifiedPhotos();
-    }
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, [photos]);
 
   const handleRemove = (photoId: string, e: any) => {
@@ -68,6 +81,14 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
     } else {
       onUpload();
     }
+  };
+
+  const handleAddPress = () => {
+    if (photos.length >= MAX_HUMAN_PHOTOS) {
+      Alert.alert('Limit reached', `You can upload up to ${MAX_HUMAN_PHOTOS} photos.`);
+      return;
+    }
+    onUpload();
   };
 
 
@@ -112,19 +133,12 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
         <AppText variant="body" style={styles.title}>
           Your Photos
         </AppText>
-        {hasHumanDogPhoto && (
-          <View style={styles.badgeIndicator}>
-            <AppText variant="caption" style={styles.badgeText}>
-              🏆 Trust Badge
-            </AppText>
-          </View>
-        )}
       </View>
 
       {!hasHumanDogPhoto && (
         <View style={styles.hintContainer}>
           <AppText variant="caption" style={styles.hintText}>
-            💡 Upload a photo with you + your dog to earn a Trust Badge (more badges = more visibility).
+            💡 Upload a photo with you + your dog to earn a Trust badge (more badges = more visibility).
           </AppText>
         </View>
       )}
@@ -141,13 +155,33 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
         {photos.map((photo, index) => {
           const imageUrl = photoUrls.get(photo.id) ?? null;
           const isRejected = photo.status === 'rejected';
-          const isVerified = verifiedPhotoIds.has(photo.id);
+          const isSelfieVerified = selfieVerifiedPhotoId === photo.id;
+          const isPhotoWithDog =
+            photo.bucket_type === 'human' &&
+            photo.status === 'approved' &&
+            photo.contains_human &&
+            photo.contains_dog;
+
+          const badgeColor = (() => {
+            if (isRejected) return null;
+            if (isSelfieVerified && isPhotoWithDog) return Colors.accent; // gold
+            if (isPhotoWithDog) return PHOTO_WITH_DOG_BORDER; // blue
+            if (isSelfieVerified) return SELFIE_VERIFIED_BORDER; // teal
+            return null;
+          })();
+
+          const tileBorderStyle =
+            badgeColor && !isRejected
+              ? { borderWidth: 2, borderColor: badgeColor }
+              : undefined;
+
           return (
             <View key={photo.id} style={styles.photoTileContainer}>
               <View
                 style={[
                   styles.photoTile,
                   isRejected && styles.photoTileRejected,
+                  tileBorderStyle,
                 ]}
               >
                 {imageUrl ? (
@@ -163,9 +197,9 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
                       cachePolicy="memory-disk"
                       transition={200}
                     />
-                    {isVerified && (
-                      <View style={styles.verifiedBadge}>
-                        <IconSymbol name="checkmark.seal.fill" size={20} color={Colors.primary} />
+                    {!!badgeColor && (
+                      <View style={[styles.trophyBadge, { borderColor: badgeColor }]}>
+                        <MaterialIcons name="emoji-events" size={14} color={badgeColor} />
                       </View>
                     )}
                   </TouchableOpacity>
@@ -189,6 +223,13 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
                   </AppText>
                 </View>
               )}
+              {!isRejected && isSelfieVerified && !isPhotoWithDog && (
+                <View style={styles.selfieVerifiedCaptionWrap}>
+                  <AppText variant="caption" style={styles.selfieVerifiedCaption}>
+                    Selfie verified
+                  </AppText>
+                </View>
+              )}
             </View>
           );
         })}
@@ -207,7 +248,7 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
         {!isUploading && (
           <TouchableOpacity
             style={styles.addButton}
-            onPress={onUpload}
+            onPress={handleAddPress}
             disabled={isUploading}
           >
             <AppText variant="body" style={styles.addButtonText}>
@@ -219,6 +260,12 @@ export const HumanPhotoBucket: React.FC<HumanPhotoBucketProps> = ({
           </TouchableOpacity>
         )}
       </View>
+
+      {photos.length >= MAX_HUMAN_PHOTOS && (
+        <AppText variant="caption" style={styles.limitText}>
+          Max {MAX_HUMAN_PHOTOS} photos
+        </AppText>
+      )}
     </Card>
   );
 };
@@ -234,16 +281,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   title: {
-    fontWeight: '600',
-  },
-  badgeIndicator: {
-    backgroundColor: Colors.primary + '20',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    borderRadius: 12,
-  },
-  badgeText: {
-    color: Colors.primary,
     fontWeight: '600',
   },
   hintContainer: {
@@ -280,6 +317,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
     position: 'relative',
+    backgroundColor: Colors.background,
   },
   photoTileRejected: {
     borderWidth: 2,
@@ -300,18 +338,32 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  verifiedBadge: {
+  trophyBadge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
+    top: 6,
+    right: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     backgroundColor: Colors.background,
-    borderRadius: 12,
-    padding: 4,
+    borderWidth: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    shadowOpacity: 0.12,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  selfieVerifiedCaptionWrap: {
+    marginTop: Spacing.xs,
+    alignItems: 'center',
+  },
+  selfieVerifiedCaption: {
+    color: Colors.secondary,
+    fontSize: 10,
+    fontWeight: '700',
+    opacity: 0.95,
   },
   removeButton: {
     position: 'absolute',
@@ -353,6 +405,11 @@ const styles = StyleSheet.create({
   },
   addButtonLabel: {
     opacity: 0.6,
+  },
+  limitText: {
+    marginTop: Spacing.sm,
+    opacity: 0.65,
+    textAlign: 'center',
   },
   rejectionReasonContainer: {
     marginTop: Spacing.xs,

@@ -12,7 +12,7 @@ interface SentRequestTileProps {
 }
 
 export function SentRequestTile({ request, onPress }: SentRequestTileProps) {
-  const photoUrl = toPublicPhotoUrl(request.hero_storage_path);
+  const photoUrl = toPublicPhotoUrl(request.thumb_storage_path ?? request.hero_storage_path);
   
   return (
     <TouchableOpacity style={styles.container} onPress={onPress} activeOpacity={0.7}>

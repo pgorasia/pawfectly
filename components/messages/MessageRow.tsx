@@ -29,7 +29,7 @@ function formatTimeAgo(dateString: string): string {
 }
 
 export function MessageRow({ thread, onPress }: MessageRowProps) {
-  const photoUrl = toPublicPhotoUrl(thread.hero_storage_path);
+  const photoUrl = toPublicPhotoUrl(thread.thumb_storage_path ?? thread.hero_storage_path);
   const hasUnread = thread.unread_count > 0;
   
   return (

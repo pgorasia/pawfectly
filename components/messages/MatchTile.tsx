@@ -13,7 +13,7 @@ interface MatchTileProps {
 }
 
 export function MatchTile({ match, onPress }: MatchTileProps) {
-  const photoUrl = toPublicPhotoUrl(match.hero_storage_path);
+  const photoUrl = toPublicPhotoUrl(match.thumb_storage_path ?? match.hero_storage_path);
   const badgeLane = (match.badge_lane ?? match.lane) as LaneBadgeValue;
 
   return (

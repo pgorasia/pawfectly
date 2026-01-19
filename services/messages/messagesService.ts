@@ -20,6 +20,7 @@ export interface Match {
   display_name: string;
   dog_name: string | null;
   hero_storage_path: string | null;
+  thumb_storage_path?: string | null; // Preferred thumbnail (human-first), falls back to hero
 }
 
 export interface Thread {
@@ -32,6 +33,7 @@ export interface Thread {
   display_name: string;
   dog_name: string | null;
   hero_storage_path: string | null;
+  thumb_storage_path?: string | null; // Preferred thumbnail (human-first), falls back to hero
 }
 
 export interface SentRequest {
@@ -45,6 +47,7 @@ export interface SentRequest {
   display_name: string;
   dog_name: string | null;
   hero_storage_path: string | null;
+  thumb_storage_path?: string | null; // Preferred thumbnail (human-first), falls back to hero
 }
 
 export interface IncomingRequest {
@@ -56,6 +59,7 @@ export interface IncomingRequest {
   display_name: string;
   dog_name: string | null;
   hero_storage_path: string | null;
+  thumb_storage_path?: string | null; // Preferred thumbnail (human-first), falls back to hero
 }
 
 export interface MessagesHomeResponse {

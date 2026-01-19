@@ -463,7 +463,17 @@ export async function submitSwipe(
   candidateId: string,
   action: 'accept' | 'reject' | 'pass',
   lane: 'pals' | 'match'
-): Promise<{ ok: boolean; error?: string; remaining_accepts?: number | null }> {
+): Promise<{
+  ok: boolean;
+  error?: string;
+  remaining_accepts?: number | null;
+  connection_event?: {
+    type: 'mutual' | 'cross_lane_chooser';
+    lane?: 'pals' | 'match';
+    other_user_id: string;
+    conversation_id?: string | null;
+  } | null;
+}> {
   const { data, error } = await supabase.rpc('submit_swipe', {
     p_candidate_id: candidateId,
     p_action: action,
@@ -492,11 +502,18 @@ export async function sendChatRequest(
   clientMessageId?: string
 ): Promise<{
   ok: boolean;
+  conversation_id?: string;
   remaining_accepts?: number | null;
   error?: string;
   limit?: number;
   used?: number;
   cross_lane_pending?: boolean;
+  connection_event?: {
+    type: 'mutual' | 'cross_lane_chooser';
+    lane?: 'pals' | 'match';
+    other_user_id: string;
+    conversation_id?: string | null;
+  } | null;
 }> {
   // Generate client message ID if not provided
   const finalClientMessageId = clientMessageId || generateClientMessageId();
@@ -562,6 +579,19 @@ export async function sendChatRequest(
       ok: true,
       remaining_accepts: result?.remaining_accepts,
       cross_lane_pending: true,
+    };
+  }
+
+  // Quota / expected "soft" errors: let the UI handle them (show upsell, etc.)
+  // We return ok:false instead of throwing so callers can branch on result.error.
+  if (result?.error === 'daily_limit_reached' || result?.error === 'insufficient_compliments') {
+    console.warn('[feedService] send_chat_request quota error:', result.error);
+    return {
+      ok: false,
+      error: result.error,
+      remaining_accepts: result?.remaining_accepts,
+      limit: result?.limit,
+      used: result?.used,
     };
   }
 

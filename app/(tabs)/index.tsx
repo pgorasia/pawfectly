@@ -31,6 +31,9 @@ import { purchaseConsumable, consumeMyConsumable } from '@/services/consumables/
 import { ConsumableUpsellModal } from '@/components/account/ConsumableUpsellModal';
 import { useMyEntitlements } from '@/hooks/useMyEntitlements';
 import { isEntitlementActive } from '@/services/entitlements/entitlementsService';
+import { useLikedYouIdCache } from '@/hooks/useLikedYouIdCache';
+import { ConnectionCelebrationSheet, type CelebrationKind } from '@/components/feed/ConnectionCelebrationSheet';
+import { publicPhotoUrl } from '@/utils/photoUrls';
 
 // Storage for persistence (AsyncStorage in Expo Go, MMKV in production)
 const DISLIKE_OUTBOX_KEY = 'dislike_outbox_v1';
@@ -56,11 +59,12 @@ type DislikeEvent = {
 export default function FeedScreen() {
   const router = useRouter();
   const { user } = useAuth();
-  const { me } = useMe();
+  const { me, meLoaded } = useMe();
   const scrollViewRef = useRef<ScrollView>(null);
   const { byType: consumableByType, refresh: refreshConsumables } = useMyConsumables();
   const { data: entitlements } = useMyEntitlements();
   const isPlus = isEntitlementActive(entitlements, 'plus');
+  const likedYouCache = useLikedYouIdCache();
   
   console.log('[FeedScreen] 🔄 Component render (Feed screen mounted)');
   
@@ -141,6 +145,19 @@ export default function FeedScreen() {
   const [isProfileHidden, setIsProfileHidden] = useState<boolean | null>(null);
   const [showBlockMenu, setShowBlockMenu] = useState(false);
   const [refilling, setRefilling] = useState(false);
+
+  // Connection celebration modal state (shown when the user completes a connection)
+  const [celebration, setCelebration] = useState<{
+    kind: CelebrationKind;
+    peerUserId: string;
+    peerName: string;
+    peerPhotoPath: string | null;
+    peerPhotoUrl: string | null; // derived from peerPhotoPath for display
+    lane: Lane;
+    conversationId?: string | null; // when known, deep-link to existing thread
+  } | null>(null);
+  const [myHumanPhotoUrl, setMyHumanPhotoUrl] = useState<string | null>(null);
+  const myHumanPhotoInflightRef = useRef<Promise<void> | null>(null);
   
   // Like modal state
   const [showLikeModal, setShowLikeModal] = useState(false);
@@ -154,6 +171,15 @@ export default function FeedScreen() {
   // Undo countdown UI (no animation)
   const [undoSecondsLeft, setUndoSecondsLeft] = useState<number | null>(null);
   const undoCountdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [undoPaused, setUndoPaused] = useState(false);
+  const undoPausedRemainingMsRef = useRef<number | null>(null);
+  const prevIsPlusRef = useRef<boolean>(false);
+  const [showMissedMatchTooltip, setShowMissedMatchTooltip] = useState(false);
+
+  const updateUndoCommitAfterMs = useCallback((eventId: string, commitAfterMs: number) => {
+    setPendingUndoNew((cur) => (cur?.eventId === eventId ? { ...cur, commitAfterMs } : cur));
+    setDislikeOutbox((prev) => prev.map((e) => (e.eventId === eventId ? { ...e, commitAfterMs } : e)));
+  }, []);
   
   // Persist dislikeOutbox to storage whenever it changes
   useEffect(() => {
@@ -199,6 +225,10 @@ export default function FeedScreen() {
 
   // Refresh both lanes when preferences change
   useEffect(() => {
+    // Wait for Me bootstrap so we don't treat defaultMe -> real prefs as a "change"
+    // (which would cause an immediate redundant refresh on startup).
+    if (!meLoaded) return;
+
     // Serialize all relevant preferences (enablement + filters)
     const currentPrefsStr = JSON.stringify({
       raw: me.preferencesRaw,
@@ -221,7 +251,7 @@ export default function FeedScreen() {
       prevPreferencesRef.current = currentPrefsStr;
       lastRefreshTime.current = Date.now();
     }
-  }, [me.preferencesRaw, me.preferences, user?.id, loading]);
+  }, [meLoaded, me.preferencesRaw, me.preferences, user?.id, loading]);
   
   // NetInfo: flush events when network returns
   useEffect(() => {
@@ -263,6 +293,103 @@ export default function FeedScreen() {
   
   // Track previous preferences to detect changes (including filters)
   const prevPreferencesRef = useRef<string | null>(null);
+  // Prevent "double refresh" during MeContext bootstrap on app start
+  const didInitialLoadRef = useRef(false);
+
+  // If auth user changes, allow initial load again
+  useEffect(() => {
+    didInitialLoadRef.current = false;
+  }, [user?.id]);
+
+  // Fetch/cached: viewer's approved human photo (only when needed)
+  const ensureMyHumanPhoto = useCallback(async () => {
+    if (!user?.id) return;
+    if (myHumanPhotoUrl) return;
+    if (myHumanPhotoInflightRef.current) return myHumanPhotoInflightRef.current;
+
+    const p = (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('photos')
+          .select('storage_path, contains_human, status')
+          .eq('user_id', user.id)
+          .eq('status', 'approved')
+          .eq('contains_human', true)
+          .order('created_at', { ascending: true })
+          .limit(1);
+
+        if (error) {
+          console.error('[FeedScreen] Failed to load my human photo:', error);
+          return;
+        }
+        const row = (data && data[0]) ? (data[0] as any) : null;
+        const url = publicPhotoUrl(row?.storage_path ?? null);
+        if (url) setMyHumanPhotoUrl(url);
+      } catch (e) {
+        console.error('[FeedScreen] Failed to load my human photo:', e);
+      }
+    })().finally(() => {
+      myHumanPhotoInflightRef.current = null;
+    });
+
+    myHumanPhotoInflightRef.current = p;
+    return p;
+  }, [user?.id, myHumanPhotoUrl]);
+
+  // When showing celebration, ensure we have the viewer photo ready (best-effort)
+  useEffect(() => {
+    if (!celebration) return;
+    ensureMyHumanPhoto().catch(() => {});
+  }, [celebration, ensureMyHumanPhoto]);
+
+  const pickPeerHumanPhoto = useCallback((payload: ProfileViewPayload): { storagePath: string | null; url: string | null } => {
+    // Prefer hero photo if it's from human bucket; otherwise fall back to any human photo.
+    if (payload.hero_photo?.bucket_type === 'human') {
+      return {
+        storagePath: payload.hero_photo.storage_path,
+        url: publicPhotoUrl(payload.hero_photo.storage_path),
+      };
+    }
+    const human = payload.photos.find((p) => p.bucket_type === 'human' && p.contains_human);
+    const storagePath = human?.storage_path ?? null;
+    return { storagePath, url: publicPhotoUrl(storagePath) };
+  }, []);
+
+  const maybeShowConnectionCelebration = useCallback(
+    (params: { lane: Lane; payload: ProfileViewPayload; connectionEvent: any | null | undefined }) => {
+      const { lane, payload, connectionEvent } = params;
+      if (!connectionEvent?.type) return;
+
+      const peerName = payload.candidate.display_name || 'Someone';
+      const peerPhoto = pickPeerHumanPhoto(payload);
+
+      if (connectionEvent.type === 'mutual') {
+        setCelebration({
+          kind: lane === 'pals' ? 'pals' : 'match',
+          peerUserId: payload.candidate.user_id,
+          peerName,
+          peerPhotoPath: peerPhoto.storagePath,
+          peerPhotoUrl: peerPhoto.url,
+          lane,
+          conversationId: connectionEvent.conversation_id ?? null,
+        });
+        return;
+      }
+
+      if (connectionEvent.type === 'cross_lane_chooser' && lane === 'pals') {
+        setCelebration({
+          kind: 'cross_lane',
+          peerUserId: payload.candidate.user_id,
+          peerName,
+          peerPhotoPath: peerPhoto.storagePath,
+          peerPhotoUrl: peerPhoto.url,
+          lane,
+          conversationId: null,
+        });
+      }
+    },
+    [pickPeerHumanPhoto]
+  );
 
   // Load feed page for a specific lane
   const loadFeedPage = useCallback(
@@ -327,22 +454,29 @@ export default function FeedScreen() {
     [user?.id]
   );
 
-  // Initialize: load queue for active lane (only if empty)
-  // CRITICAL: Do NOT refetch on lane change - preserve index per lane
+  // Initialize: wait for MeContext bootstrap before first fetch.
+  // Without this, we can fetch once with defaultMe (no lanes) and then refresh again
+  // as soon as meLoaded flips and lane enablement becomes known.
   useEffect(() => {
     const initialize = async () => {
-      const queue = queueByLane[lane];
-      // Only load if queue is empty (initial mount or after reset)
-      if (queue.length === 0 && !exhaustedByLane[lane]) {
-        console.log('[FeedScreen] Mount: initializing lane:', lane);
-        setLoading(true);
-        await loadFeedPage(lane, null, false);
-        setLoading(false);
-        lastRefreshTime.current = Date.now();
-      }
+      if (!user?.id) return;
+      if (!meLoaded) return;
+      if (didInitialLoadRef.current) return;
+
+      didInitialLoadRef.current = true;
+
+      const initialLane: Lane = defaultLane;
+      setLane(initialLane);
+
+      console.log('[FeedScreen] Initial load after meLoaded:', { initialLane });
+      setLoading(true);
+      await loadFeedPage(initialLane, null, false);
+      setLoading(false);
+      lastRefreshTime.current = Date.now();
     };
+
     initialize();
-  }, []); // Only run on mount - do NOT depend on lane
+  }, [user?.id, meLoaded, defaultLane, loadFeedPage]);
 
   // Refresh feed when screen comes into focus (e.g., after resetting dislikes)
   // Check if specific lanes need refresh (after reset) and clear only those lanes
@@ -353,7 +487,7 @@ export default function FeedScreen() {
       const checkAndRefresh = async () => {
         const now = Date.now();
         
-        if (!user?.id || loading) return;
+        if (!user?.id || !meLoaded || loading) return;
 
         // Never refresh/reload while an undo window is active; it can resurrect
         // the just-skipped profile since the server won't see it until commit.
@@ -398,7 +532,7 @@ export default function FeedScreen() {
       };
       
       checkAndRefresh();
-    }, [user?.id, loading, lane, loadFeedPage, me.preferencesRaw])
+    }, [user?.id, meLoaded, loading, lane, loadFeedPage, me.preferencesRaw])
   );
 
   // Current profile is now derived from queue[index] - no separate state needed
@@ -407,12 +541,26 @@ export default function FeedScreen() {
   // Track whether an undo window is active (used to avoid refresh-on-focus glitches)
   useEffect(() => {
     queueStateRef.current.hasPendingUndo = !!pendingUndoNew;
+    if (!pendingUndoNew) {
+      setShowMissedMatchTooltip(false);
+    }
   }, [pendingUndoNew]);
 
   // Auto-expire pendingUndoNew after grace period (no animation)
   useEffect(() => {
     if (!pendingUndoNew) {
       setUndoSecondsLeft(null);
+      if (undoCountdownIntervalRef.current) {
+        clearInterval(undoCountdownIntervalRef.current);
+        undoCountdownIntervalRef.current = null;
+      }
+      setUndoPaused(false);
+      undoPausedRemainingMsRef.current = null;
+      return;
+    }
+
+    if (undoPaused) {
+      // Freeze countdown & prevent auto-expiry while a modal (e.g. rewind pack picker) is open.
       if (undoCountdownIntervalRef.current) {
         clearInterval(undoCountdownIntervalRef.current);
         undoCountdownIntervalRef.current = null;
@@ -448,7 +596,62 @@ export default function FeedScreen() {
         undoCountdownIntervalRef.current = null;
       }
     };
-  }, [pendingUndoNew]);
+  }, [pendingUndoNew, undoPaused]);
+
+  // If the cache warms up slightly after the swipe, still show the tooltip while rewind is visible.
+  useEffect(() => {
+    if (!user?.id) return;
+    if (!pendingUndoNew) return;
+    if (showMissedMatchTooltip) return;
+    if (!likedYouCache.ready) return;
+    if (likedYouCache.has(pendingUndoNew.targetId)) {
+      setShowMissedMatchTooltip(true);
+    }
+  }, [user?.id, pendingUndoNew, showMissedMatchTooltip, likedYouCache.ready, likedYouCache]);
+
+  // Pause the undo/rewind countdown while the rewind pack picker is visible.
+  // This MUST also pause the server-commit schedule (dislikeOutbox) so the swipe isn't finalized while user is deciding.
+  useEffect(() => {
+    if (!pendingUndoNew) return;
+
+    if (showRewindUpsell) {
+      if (undoPaused) return;
+      const remainingMs = Math.max(0, pendingUndoNew.commitAfterMs - Date.now());
+      undoPausedRemainingMsRef.current = remainingMs;
+      setUndoPaused(true);
+      setUndoSecondsLeft(Math.max(0, Math.ceil(remainingMs / 1000)));
+
+      // Freeze commit scheduling while modal is open.
+      updateUndoCommitAfterMs(pendingUndoNew.eventId, Number.MAX_SAFE_INTEGER);
+      return;
+    }
+
+    // Modal closed: resume from where we paused (if we didn't reset due to purchase).
+    if (!showRewindUpsell && undoPaused) {
+      const remainingMs = undoPausedRemainingMsRef.current ?? 0;
+      undoPausedRemainingMsRef.current = null;
+      setUndoPaused(false);
+      updateUndoCommitAfterMs(pendingUndoNew.eventId, Date.now() + remainingMs);
+    }
+  }, [showRewindUpsell, pendingUndoNew, undoPaused, updateUndoCommitAfterMs]);
+
+  // If user upgrades to Plus while the rewind pack picker is open, reset the countdown.
+  useEffect(() => {
+    const wasPlus = prevIsPlusRef.current;
+    prevIsPlusRef.current = isPlus;
+    if (wasPlus || !isPlus) return;
+
+    if (showRewindUpsell) {
+      setShowRewindUpsell(false);
+    }
+    if (pendingUndoNew) {
+      // Reset to a fresh 10s grace window.
+      undoPausedRemainingMsRef.current = null;
+      setUndoPaused(false);
+      setUndoSecondsLeft(10);
+      updateUndoCommitAfterMs(pendingUndoNew.eventId, Date.now() + 10_000);
+    }
+  }, [isPlus, showRewindUpsell, pendingUndoNew, updateUndoCommitAfterMs]);
 
   // Cleanup empty state timeout on unmount
   useEffect(() => {
@@ -722,6 +925,7 @@ export default function FeedScreen() {
     if (!user?.id || !currentProfile || swiping) return;
 
     const candidateId = currentProfile.candidate.user_id;
+    const snapshot = currentProfile;
     setSwiping(true);
 
     try {
@@ -747,6 +951,7 @@ export default function FeedScreen() {
         // Set pendingUndo (single-slot reserve)
         setPendingUndoNew(event);
         queueStateRef.current.hasPendingUndo = true;
+        setShowMissedMatchTooltip(likedYouCache.has(candidateId));
 
         // Advance immediately (no animation) to avoid stale-card-on-return glitches
         advanceToNext();
@@ -758,6 +963,12 @@ export default function FeedScreen() {
           if (result.remaining_accepts !== undefined) {
             setRemainingAccepts(result.remaining_accepts);
           }
+          // Show connection celebration if this accept completed a connection
+          maybeShowConnectionCelebration({
+            lane,
+            payload: snapshot,
+            connectionEvent: (result as any).connection_event,
+          });
           advanceToNext();
         } else if (result.error === 'daily_limit_reached') {
           setShowPremiumModal(true);
@@ -771,7 +982,7 @@ export default function FeedScreen() {
     } finally {
       setSwiping(false);
     }
-  }, [user?.id, currentProfile, swiping, lane, advanceToNext]);
+  }, [user?.id, currentProfile, swiping, lane, advanceToNext, likedYouCache, maybeShowConnectionCelebration]);
 
   // Handle heart press (like from photo/prompt)
   const handleHeartPress = useCallback((source: { type: 'photo' | 'prompt'; refId: string }) => {
@@ -783,6 +994,7 @@ export default function FeedScreen() {
   const handleLikeSubmit = useCallback(async (message: string | null) => {
     if (!user?.id || !currentProfile || !likeSource) return;
 
+    const snapshot = currentProfile;
     setShowLikeModal(false);
     setSwiping(true);
 
@@ -805,6 +1017,16 @@ export default function FeedScreen() {
         metadata
       );
 
+      // Cross-lane chooser: only show for the Pals-liker (lane === 'pals')
+      if (result.cross_lane_pending && lane === 'pals') {
+        maybeShowConnectionCelebration({
+          lane,
+          payload: snapshot,
+          connectionEvent: result.connection_event ?? { type: 'cross_lane_chooser' },
+        });
+        advanceToNext();
+        return;
+      }
 
       // Cross-lane pending: the like is recorded, but a conversation/message is not created.
       // The match-liker should wait for the pals-liker to choose a lane.
@@ -846,6 +1068,22 @@ export default function FeedScreen() {
       // Compliment is consumed server-side (idempotent). Refresh badges.
       refreshConsumables().catch(() => {});
 
+      // Same-lane mutual celebration (second liker)
+      maybeShowConnectionCelebration({
+        lane,
+        payload: snapshot,
+        connectionEvent:
+          result.connection_event && typeof result.connection_event === 'object'
+            ? {
+                ...result.connection_event,
+                conversation_id:
+                  (result.connection_event as any).conversation_id ??
+                  (result as any).conversation_id ??
+                  null,
+              }
+            : result.connection_event,
+      });
+
       // Advance to next profile
       advanceToNext();
     } catch (error) {
@@ -855,13 +1093,14 @@ export default function FeedScreen() {
       setSwiping(false);
       setLikeSource(null);
     }
-  }, [user?.id, currentProfile, likeSource, advanceToNext, lane, refreshConsumables]);
+  }, [user?.id, currentProfile, likeSource, advanceToNext, lane, refreshConsumables, maybeShowConnectionCelebration]);
 
   // Handle like button (directly submits like without modal)
   const handleLikeButton = useCallback(async () => {
     if (!currentProfile || swiping) return;
 
     const candidateId = currentProfile.candidate.user_id;
+    const snapshot = currentProfile;
 
     setSwiping(true);
     try {
@@ -872,6 +1111,12 @@ export default function FeedScreen() {
         if (res.remaining_accepts !== undefined) {
           setRemainingAccepts(res.remaining_accepts);
         }
+        // Show connection celebration if this accept completed a connection
+        maybeShowConnectionCelebration({
+          lane,
+          payload: snapshot,
+          connectionEvent: (res as any).connection_event,
+        });
         advanceToNext();
       } else if (res.error === 'daily_limit_reached') {
         setShowPremiumModal(true);
@@ -884,7 +1129,7 @@ export default function FeedScreen() {
     } finally {
       setSwiping(false);
     }
-  }, [currentProfile, swiping, lane, advanceToNext]);
+  }, [currentProfile, swiping, lane, advanceToNext, maybeShowConnectionCelebration]);
 
   const handleBlock = useCallback(async (reason: 'block' | 'report', candidateId: string, humanName: string | null) => {
     if (!user?.id) return;
@@ -971,6 +1216,7 @@ export default function FeedScreen() {
   // Handle undo action (local only, within 10s grace period)
   const handleUndo = useCallback(async () => {
     if (!pendingUndoNew) return;
+    setShowMissedMatchTooltip(false);
 
     // Rewind consumption (included-first, then purchased). If out, prompt to buy more.
     try {
@@ -1067,20 +1313,30 @@ export default function FeedScreen() {
         </AppText>
         <View style={styles.headerRight}>
           {!!pendingUndoNew && (
-            <TouchableOpacity
-              style={styles.headerButton}
-              onPress={handleUndo}
-              disabled={swiping}
-            >
-              <View style={styles.undoButtonSimple}>
-                <MaterialIcons name="undo" size={20} color={Colors.primary} />
-                {undoSecondsLeft !== null && (
-                  <AppText variant="caption" style={styles.undoSecondsText}>
-                    {undoSecondsLeft}s
+            <View style={styles.undoWrap}>
+              <TouchableOpacity
+                style={styles.headerButton}
+                onPress={handleUndo}
+                disabled={swiping}
+              >
+                <View style={styles.undoButtonSimple}>
+                  <MaterialIcons name="undo" size={20} color={Colors.primary} />
+                  {undoSecondsLeft !== null && (
+                    <AppText variant="caption" style={styles.undoSecondsText}>
+                      {undoSecondsLeft}s
+                    </AppText>
+                  )}
+                </View>
+              </TouchableOpacity>
+              {showMissedMatchTooltip && (
+                <View pointerEvents="none" style={styles.missedMatchTooltip}>
+                  <View style={styles.missedMatchCaret} />
+                  <AppText variant="caption" style={styles.missedMatchText}>
+                    You missed a match
                   </AppText>
-                )}
-              </View>
-            </TouchableOpacity>
+                </View>
+              )}
+            </View>
           )}
           <TouchableOpacity
             style={styles.headerButton}
@@ -1355,6 +1611,13 @@ export default function FeedScreen() {
           try {
             await purchaseConsumable('rewind', qty);
             await refreshConsumables();
+            // User bought rewinds: reset undo countdown (fresh 10s) so they can rewind immediately.
+            if (pendingUndoNew) {
+              undoPausedRemainingMsRef.current = null;
+              setUndoPaused(false);
+              setUndoSecondsLeft(10);
+              updateUndoCommitAfterMs(pendingUndoNew.eventId, Date.now() + 10_000);
+            }
             setShowRewindUpsell(false);
             Alert.alert('Purchased', `Added ${qty} rewinds.`);
           } finally {
@@ -1398,8 +1661,77 @@ export default function FeedScreen() {
           }
         }}
         secondaryCta={
-          isPlus ? null : { label: 'Get weekly compliments with Pawfectly+', onPress: () => router.push('/(tabs)/account/plus') }
+          isPlus ? null : { label: 'Get 5 compliments/week with Pawfectly+', onPress: () => router.push('/(tabs)/account/plus') }
         }
+      />
+
+      {/* Connection celebration bottom-sheet */}
+      <ConnectionCelebrationSheet
+        visible={!!celebration}
+        onDismiss={() => setCelebration(null)}
+        kind={celebration?.kind ?? 'match'}
+        peerName={celebration?.peerName ?? 'Someone'}
+        peerPhotoUrl={celebration?.peerPhotoUrl ?? null}
+        myPhotoUrl={myHumanPhotoUrl}
+        primaryCtaLabel={
+          celebration?.kind === 'cross_lane'
+            ? 'Choose connection type'
+            : `Say hi to ${celebration?.peerName ?? 'them'}`
+        }
+        onPrimaryCta={async () => {
+          if (!celebration) return;
+          try {
+            if (celebration.kind === 'cross_lane') {
+              router.push({
+                pathname: '/messages/cross-lane/[otherUserId]',
+                params: {
+                  otherUserId: celebration.peerUserId,
+                  peerName: celebration.peerName,
+                  peerPhotoPath: celebration.peerPhotoPath ? celebration.peerPhotoPath : '',
+                  peerUserId: celebration.peerUserId,
+                },
+              });
+              setCelebration(null);
+              return;
+            }
+
+          // If server told us which conversation this connection maps to (e.g. auto-accepted request),
+          // deep-link directly to the real thread so existing pending/request messages show.
+          if (celebration.conversationId) {
+            router.push({
+              pathname: '/messages/[conversationId]',
+              params: {
+                conversationId: celebration.conversationId,
+                peerUserId: celebration.peerUserId,
+                peerName: celebration.peerName,
+                peerPhotoPath: celebration.peerPhotoPath ? celebration.peerPhotoPath : '',
+              },
+            });
+            setCelebration(null);
+            return;
+          }
+
+            // IMPORTANT: Do NOT create a conversation until the user actually sends.
+            // Open the SAME chat screen in "draft" mode so the UI matches Messages.
+            router.push({
+              pathname: '/messages/[conversationId]',
+              params: {
+                conversationId: 'draft',
+                isDraft: 'true',
+                draftLane: celebration.lane,
+                peerUserId: celebration.peerUserId,
+                peerName: celebration.peerName,
+                peerPhotoPath: celebration.peerPhotoPath ? celebration.peerPhotoPath : '',
+              },
+            });
+            setCelebration(null);
+          } catch (e) {
+            console.error('[FeedScreen] Failed to open conversation:', e);
+            Alert.alert('Error', 'Failed to open chat. Please try again.');
+          }
+        }}
+        secondaryCtaLabel={celebration ? 'Keep exploring' : undefined}
+        onSecondaryCta={celebration ? () => setCelebration(null) : undefined}
       />
     </ScreenContainer>
   );
@@ -1492,6 +1824,42 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: Colors.primary,
+  },
+  undoWrap: {
+    position: 'relative',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  missedMatchTooltip: {
+    position: 'absolute',
+    top: 44,
+    right: 0,
+    backgroundColor: Colors.text,
+    borderRadius: 999,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 6,
+    maxWidth: 220,
+    zIndex: 10,
+    elevation: 10,
+  },
+  missedMatchCaret: {
+    position: 'absolute',
+    top: -6,
+    right: 18,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderBottomWidth: 6,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: Colors.text,
+  },
+  missedMatchText: {
+    color: Colors.background,
+    fontSize: 12,
+    fontWeight: '700',
+    opacity: 0.95,
   },
   emptyContainer: {
     flex: 1,
